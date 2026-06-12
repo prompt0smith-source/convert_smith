@@ -13,6 +13,47 @@ export class OfficeEngine {
     onProgress: ProgressCallback,
     signal?: AbortSignal
   ): Promise<void> {
+    await this.convertWithLibreOffice(
+      inputPath,
+      outputPath,
+      sofficePath,
+      "pdf",
+      ".pdf",
+      "LibreOffice에서 PDF로 변환하는 중입니다.",
+      onProgress,
+      signal
+    );
+  }
+
+  async convertToCsv(
+    inputPath: string,
+    outputPath: string,
+    sofficePath: string,
+    onProgress: ProgressCallback,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await this.convertWithLibreOffice(
+      inputPath,
+      outputPath,
+      sofficePath,
+      "csv",
+      ".csv",
+      "LibreOffice에서 CSV로 변환하는 중입니다.",
+      onProgress,
+      signal
+    );
+  }
+
+  private async convertWithLibreOffice(
+    inputPath: string,
+    outputPath: string,
+    sofficePath: string,
+    convertTo: string,
+    expectedExtension: string,
+    runningMessage: string,
+    onProgress: ProgressCallback,
+    signal?: AbortSignal
+  ): Promise<void> {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "convert-smith-office-"));
     onProgress(15, "LibreOffice 변환을 준비하는 중입니다.");
 
@@ -20,17 +61,18 @@ export class OfficeEngine {
       const executablePath = await this.resolveLibreOfficeExecutable(sofficePath);
       await this.runLibreOffice(
         executablePath,
-        ["--headless", "--convert-to", "pdf", "--outdir", tempDir, inputPath],
+        ["--headless", "--convert-to", convertTo, "--outdir", tempDir, inputPath],
+        runningMessage,
         onProgress,
         signal
       );
       const files = await readdir(tempDir);
-      const pdfFile = files.find((file) => file.toLowerCase().endsWith(".pdf"));
-      if (!pdfFile) {
-        throw new Error("LibreOffice가 PDF 출력 파일을 만들지 못했습니다.");
+      const convertedFile = files.find((file) => file.toLowerCase().endsWith(expectedExtension));
+      if (!convertedFile) {
+        throw new Error(`LibreOffice가 ${expectedExtension} 출력 파일을 만들지 못했습니다.`);
       }
-      await copyFile(path.join(tempDir, pdfFile), outputPath);
-      onProgress(92, "PDF 파일을 저장했습니다.");
+      await copyFile(path.join(tempDir, convertedFile), outputPath);
+      onProgress(92, "출력 파일을 저장했습니다.");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -53,6 +95,7 @@ export class OfficeEngine {
   private runLibreOffice(
     sofficePath: string,
     args: string[],
+    runningMessage: string,
     onProgress: ProgressCallback,
     signal?: AbortSignal
   ): Promise<void> {
@@ -69,7 +112,7 @@ export class OfficeEngine {
       };
 
       signal?.addEventListener("abort", abort, { once: true });
-      onProgress(35, "LibreOffice에서 문서를 PDF로 변환하는 중입니다.");
+      onProgress(35, runningMessage);
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");

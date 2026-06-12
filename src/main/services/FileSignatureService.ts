@@ -27,6 +27,11 @@ export class FileSignatureService {
     return bytes.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   }
 
+  async isWebp(filePath: string): Promise<boolean> {
+    const bytes = await this.readBytes(filePath, 12);
+    return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+  }
+
   async isZip(filePath: string): Promise<boolean> {
     const bytes = await this.readBytes(filePath, 4);
     return bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);

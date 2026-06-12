@@ -12,12 +12,20 @@ interface UtilityDrawerProps {
   jobs: ConversionJob[];
   libreOfficePath?: string;
   darkMode: boolean;
+  floatingEnabled: boolean;
+  clearFilesAfterSuccess: boolean;
+  openFolderAfterSuccess: boolean;
+  openFileAfterSuccess: boolean;
   onToggle: () => void;
   onClose: () => void;
   onRefreshDependencies: () => void;
   onPickLibreOfficePath: () => void;
   onOpenLibreOfficeDownload: () => void;
   onDarkModeChange: (value: boolean) => void;
+  onFloatingEnabledChange: (value: boolean) => void;
+  onClearFilesAfterSuccessChange: (value: boolean) => void;
+  onOpenFolderAfterSuccessChange: (value: boolean) => void;
+  onOpenFileAfterSuccessChange: (value: boolean) => void;
   onCancelJob: (jobId: string) => void;
   onReveal: (path: string) => void;
   onCopy: (path: string) => void;
@@ -29,12 +37,20 @@ export function UtilityDrawer({
   jobs,
   libreOfficePath,
   darkMode,
+  floatingEnabled,
+  clearFilesAfterSuccess,
+  openFolderAfterSuccess,
+  openFileAfterSuccess,
   onToggle,
   onClose,
   onRefreshDependencies,
   onPickLibreOfficePath,
   onOpenLibreOfficeDownload,
   onDarkModeChange,
+  onFloatingEnabledChange,
+  onClearFilesAfterSuccessChange,
+  onOpenFolderAfterSuccessChange,
+  onOpenFileAfterSuccessChange,
   onCancelJob,
   onReveal,
   onCopy
@@ -54,7 +70,7 @@ export function UtilityDrawer({
         type="button"
         onClick={onToggle}
         aria-label="옵션 패널"
-        className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-700 shadow-sm hover:bg-stone-50"
+        className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-300 bg-stone-200 text-stone-800 shadow-sm hover:bg-stone-300"
       >
         <Settings
           size={19}
@@ -88,9 +104,17 @@ export function UtilityDrawer({
               <SettingsPanel
                 libreOfficePath={libreOfficePath}
                 darkMode={darkMode}
+                floatingEnabled={floatingEnabled}
+                clearFilesAfterSuccess={clearFilesAfterSuccess}
+                openFolderAfterSuccess={openFolderAfterSuccess}
+                openFileAfterSuccess={openFileAfterSuccess}
                 onPickLibreOfficePath={onPickLibreOfficePath}
                 onOpenLibreOfficeDownload={onOpenLibreOfficeDownload}
                 onDarkModeChange={onDarkModeChange}
+                onFloatingEnabledChange={onFloatingEnabledChange}
+                onClearFilesAfterSuccessChange={onClearFilesAfterSuccessChange}
+                onOpenFolderAfterSuccessChange={onOpenFolderAfterSuccessChange}
+                onOpenFileAfterSuccessChange={onOpenFileAfterSuccessChange}
               />
               <JobQueue jobs={jobs} onCancel={onCancelJob} onReveal={onReveal} onCopy={onCopy} />
               <ConversionResultPanel jobs={jobs} onReveal={onReveal} />

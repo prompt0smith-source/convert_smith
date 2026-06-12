@@ -19,6 +19,17 @@ interface OutputSettingsProps {
   onOptionsChange: (options: ConversionOptions) => void;
 }
 
+const QUALITY_CONVERSIONS: ConversionType[] = [
+  "heic_to_jpg",
+  "png_to_jpg",
+  "pdf_to_images",
+  "image_to_webp",
+  "webp_to_jpg",
+  "avif_to_jpg",
+  "tiff_to_jpg",
+  "bmp_to_jpg"
+];
+
 export function OutputSettings({
   outputDir,
   sourceOutputDir,
@@ -49,7 +60,7 @@ export function OutputSettings({
           <button
             type="button"
             onClick={onPickOutputDir}
-            className="flex h-10 w-full items-center justify-between gap-3 rounded-md border border-stone-300 bg-stone-50 px-3 text-left text-sm text-stone-800 hover:bg-stone-100"
+            className="flex h-10 w-full min-w-0 items-center justify-between gap-3 rounded-md border border-stone-300 bg-stone-50 px-3 text-left text-sm text-stone-800 hover:bg-stone-100"
           >
             <span className="truncate">
               {effectiveOutputDir || (useSourceFolder ? "원본 파일 폴더 감지 대기" : "저장할 폴더 선택")}
@@ -57,15 +68,25 @@ export function OutputSettings({
             <FolderOpen size={16} />
           </button>
           {!useSourceFolder && outputDir && (
-            <p className="text-xs text-stone-500">직접 지정한 폴더는 다음 실행에서도 기억됩니다.</p>
+            <p className="text-xs text-stone-500">직접 지정한 폴더는 다음 실행에서도 기억합니다.</p>
           )}
+          <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+            <input
+              type="checkbox"
+              checked={Boolean(options.useDatedSubfolder)}
+              onChange={(event) => update({ useDatedSubfolder: event.target.checked })}
+              className="h-4 w-4 accent-emerald-700"
+            />
+            날짜별 하위 폴더를 만들어 저장
+          </label>
+          <p className="text-xs leading-5 text-stone-500">
+            꺼져 있으면 선택한 폴더에 바로 저장합니다. 켜면 YYYY-MM-DD 폴더 안에 저장합니다.
+          </p>
         </div>
 
-        {(selectedConversion === "heic_to_jpg" ||
-          selectedConversion === "png_to_jpg" ||
-          selectedConversion === "pdf_to_images") && (
+        {selectedConversion && QUALITY_CONVERSIONS.includes(selectedConversion) && (
           <label className="block text-sm font-medium text-stone-700">
-            JPG 품질 {options.imageQuality}
+            품질 {options.imageQuality}
             <input
               type="range"
               min={50}
@@ -85,9 +106,9 @@ export function OutputSettings({
               onChange={(event) => update({ pdfPageSize: event.target.value as PdfPageSize })}
               className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-white px-2 text-sm"
             >
-              <option value="auto">Auto fit to image</option>
-              <option value="a4_portrait">A4 portrait</option>
-              <option value="a4_landscape">A4 landscape</option>
+              <option value="auto">이미지에 맞춤</option>
+              <option value="a4_portrait">A4 세로</option>
+              <option value="a4_landscape">A4 가로</option>
             </select>
           </label>
         )}
@@ -139,6 +160,12 @@ export function OutputSettings({
         {selectedConversion === "jpg_to_png" && (
           <p className="rounded-md bg-stone-100 px-3 py-2 text-sm leading-6 text-stone-700">
             {helperMessages.jpgToPng}
+          </p>
+        )}
+
+        {selectedConversion === "xlsx_to_csv" && (
+          <p className="rounded-md bg-stone-100 px-3 py-2 text-sm leading-6 text-stone-700">
+            CSV는 표 데이터 중심 형식입니다. 글꼴, 색상, 셀 병합 같은 엑셀 서식은 유지되지 않습니다.
           </p>
         )}
       </div>

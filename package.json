@@ -69,6 +69,7 @@
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
       "node_modules/ffprobe-static/**",
+      "node_modules/pdfjs-dist/**",
       "node_modules/sharp/**",
       "node_modules/@img/**",
       "node_modules/@napi-rs/**"

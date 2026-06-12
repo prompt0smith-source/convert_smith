@@ -8,7 +8,33 @@ const LIBRE_OFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/";
 const OPEN_FILE_FILTERS = [
   {
     name: "지원 파일",
-    extensions: ["pdf", "doc", "docx", "xls", "xlsx", "jpg", "jpeg", "png", "heic", "heif", "mp4", "mov", "mkv", "webm", "m4v"]
+    extensions: [
+      "pdf",
+      "doc",
+      "docx",
+      "xls",
+      "xlsx",
+      "ppt",
+      "pptx",
+      "jpg",
+      "jpeg",
+      "png",
+      "heic",
+      "heif",
+      "webp",
+      "avif",
+      "tif",
+      "tiff",
+      "bmp",
+      "mp4",
+      "mov",
+      "mkv",
+      "webm",
+      "m4v",
+      "wav",
+      "flac",
+      "m4a"
+    ]
   },
   { name: "모든 파일", extensions: ["*"] }
 ];
@@ -90,11 +116,18 @@ export function registerConversionHandlers(service: ConversionService): void {
     return dependencies.getStatus(typeof libreOfficePath === "string" ? libreOfficePath : undefined);
   });
 
-  ipcMain.handle("file:getPreview", async (_event, filePath: unknown) => {
+  ipcMain.handle("file:getPreview", async (_event, filePath: unknown, pageNumber: unknown) => {
     if (typeof filePath !== "string") {
       throw new Error("파일 경로가 올바르지 않습니다.");
     }
-    return service.getFilePreview(filePath);
+    return service.getFilePreview(filePath, typeof pageNumber === "number" ? pageNumber : 1);
+  });
+
+  ipcMain.handle("file:getNativePreviewUrl", async (_event, filePath: unknown) => {
+    if (typeof filePath !== "string") {
+      throw new Error("파일 경로가 올바르지 않습니다.");
+    }
+    return service.getNativePreviewUrl(filePath);
   });
 
   ipcMain.handle("file:preview", async (_event, filePath: unknown) => {

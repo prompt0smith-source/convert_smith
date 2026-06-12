@@ -63,9 +63,18 @@ export class FfmpegEngine {
     onProgress: ProgressCallback,
     signal?: AbortSignal
   ): Promise<void> {
+    await this.convertAudioToMp3(inputPath, outputPath, onProgress, signal);
+  }
+
+  async convertAudioToMp3(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback,
+    signal?: AbortSignal
+  ): Promise<void> {
     const inspection = await this.inspect(inputPath);
     if (!inspection.hasAudio) {
-      throw new Error("동영상에 오디오 트랙이 없어 MP3를 만들 수 없습니다.");
+      throw new Error("파일에 오디오 트랙이 없어 MP3를 만들 수 없습니다.");
     }
 
     await this.runFfmpeg(

@@ -6,9 +6,25 @@ export type ConversionType =
   | "heic_to_jpg"
   | "png_to_jpg"
   | "jpg_to_png"
+  | "image_to_webp"
+  | "webp_to_jpg"
+  | "webp_to_png"
+  | "avif_to_jpg"
+  | "avif_to_png"
+  | "tiff_to_jpg"
+  | "tiff_to_png"
+  | "bmp_to_jpg"
+  | "bmp_to_png"
   | "mp4_to_mp3"
   | "mov_to_mp4"
+  | "webm_to_mp4"
+  | "mkv_to_mp4"
+  | "wav_to_mp3"
+  | "flac_to_mp3"
+  | "m4a_to_mp3"
   | "xlsx_to_pdf"
+  | "xlsx_to_csv"
+  | "pptx_to_pdf"
   | "video_compatibility_repair";
 
 export type ConversionStatus =
@@ -22,9 +38,25 @@ export type PdfPageSize = "auto" | "a4_portrait" | "a4_landscape";
 export type PdfImageFormat = "jpg" | "png";
 export type PdfToDocxMode = "editable_text" | "visual_preservation";
 export type OverwritePolicy = "increment";
-export type SortMode = "basic" | "name" | "date" | "type" | "size";
+export type SortMode = "basic" | "custom" | "name" | "date" | "type" | "size";
 export type ConvertMode = "batch" | "individual";
-export type FileKind = "pdf" | "word" | "excel" | "image" | "video" | "audio" | "other";
+export type WorkMode = "convert" | "pdf_tools";
+export type FileKind = "pdf" | "word" | "excel" | "presentation" | "image" | "video" | "audio" | "other";
+
+export type PdfToolType =
+  | "pdf_merge"
+  | "pdf_reorder"
+  | "pdf_split_all"
+  | "pdf_split_groups"
+  | "pdf_rotate_pages";
+
+export type PdfRotation = 0 | 90 | 180 | 270;
+
+export interface PdfSplitGroup {
+  id: string;
+  name: string;
+  pages: number[];
+}
 
 export interface ConversionOptions {
   imageQuality: number;
@@ -36,6 +68,7 @@ export interface ConversionOptions {
   overwritePolicy: OverwritePolicy;
   libreOfficePath?: string;
   sortMode?: SortMode;
+  useDatedSubfolder?: boolean;
 }
 
 export interface ConversionJob {
@@ -59,6 +92,43 @@ export interface StartConversionPayload {
   outputDir: string;
   conversionType: ConversionType;
   options: ConversionOptions;
+}
+
+export interface PdfToolOptions {
+  outputName?: string;
+  pageOrder?: number[];
+  pageRotations?: Record<number, PdfRotation>;
+  splitGroups?: PdfSplitGroup[];
+  useDatedSubfolder?: boolean;
+}
+
+export interface StartPdfToolPayload {
+  sourcePaths: string[];
+  outputDir: string;
+  toolType: PdfToolType;
+  options: PdfToolOptions;
+}
+
+export interface PdfToolJob {
+  id: string;
+  sourcePaths: string[];
+  outputDir: string;
+  toolType: PdfToolType;
+  status: ConversionStatus;
+  progress: number;
+  message: string;
+  outputPaths: string[];
+  error?: string;
+  technicalDetails?: string;
+  createdAt: number;
+  completedAt?: number;
+  options: PdfToolOptions;
+}
+
+export interface PdfDocumentInfo {
+  path: string;
+  name: string;
+  pageCount: number;
 }
 
 export interface FileItem {

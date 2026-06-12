@@ -11,13 +11,7 @@ export class ImageEngine {
     quality: number,
     onProgress: ProgressCallback
   ): Promise<void> {
-    onProgress(20, "PNG 이미지를 읽는 중입니다.");
-    await sharp(inputPath)
-      .rotate()
-      .flatten({ background: "#ffffff" })
-      .jpeg({ quality })
-      .toFile(outputPath);
-    onProgress(90, "JPG 파일을 저장했습니다.");
+    await this.toJpg(inputPath, outputPath, quality, onProgress, "PNG");
   }
 
   async jpgToPng(
@@ -25,9 +19,86 @@ export class ImageEngine {
     outputPath: string,
     onProgress: ProgressCallback
   ): Promise<void> {
-    onProgress(20, "JPG 이미지를 읽는 중입니다.");
-    await sharp(inputPath).rotate().png().toFile(outputPath);
-    onProgress(90, "PNG 파일을 저장했습니다.");
+    await this.toPng(inputPath, outputPath, onProgress, "JPG");
+  }
+
+  async imageToWebp(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    onProgress(20, "이미지를 WEBP로 다시 인코딩하는 중입니다.");
+    await sharp(inputPath).rotate().webp({ quality }).toFile(outputPath);
+    onProgress(90, "WEBP 파일을 저장했습니다.");
+  }
+
+  async webpToJpg(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toJpg(inputPath, outputPath, quality, onProgress, "WEBP");
+  }
+
+  async webpToPng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toPng(inputPath, outputPath, onProgress, "WEBP");
+  }
+
+  async avifToJpg(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toJpg(inputPath, outputPath, quality, onProgress, "AVIF");
+  }
+
+  async avifToPng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toPng(inputPath, outputPath, onProgress, "AVIF");
+  }
+
+  async tiffToJpg(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toJpg(inputPath, outputPath, quality, onProgress, "TIFF");
+  }
+
+  async tiffToPng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toPng(inputPath, outputPath, onProgress, "TIFF");
+  }
+
+  async bmpToJpg(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toJpg(inputPath, outputPath, quality, onProgress, "BMP");
+  }
+
+  async bmpToPng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    await this.toPng(inputPath, outputPath, onProgress, "BMP");
   }
 
   async heicToJpg(
@@ -53,5 +124,32 @@ export class ImageEngine {
     });
     await writeFile(outputPath, Buffer.from(output));
     onProgress(90, "JPG 파일을 저장했습니다.");
+  }
+
+  private async toJpg(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback,
+    sourceLabel: string
+  ): Promise<void> {
+    onProgress(20, `${sourceLabel} 이미지를 JPG로 변환하는 중입니다.`);
+    await sharp(inputPath)
+      .rotate()
+      .flatten({ background: "#ffffff" })
+      .jpeg({ quality })
+      .toFile(outputPath);
+    onProgress(90, "JPG 파일을 저장했습니다.");
+  }
+
+  private async toPng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback,
+    sourceLabel: string
+  ): Promise<void> {
+    onProgress(20, `${sourceLabel} 이미지를 PNG로 변환하는 중입니다.`);
+    await sharp(inputPath).rotate().png().toFile(outputPath);
+    onProgress(90, "PNG 파일을 저장했습니다.");
   }
 }

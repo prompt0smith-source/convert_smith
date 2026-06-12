@@ -26,7 +26,7 @@ export function ConversionTypeSelector({
   const commonConversions = getCommonConversions(files);
   const selectedDescription = batchConversionType
     ? conversionDescriptions[batchConversionType]
-    : "선택한 파일에서 가능한 변환만 표시합니다.";
+    : "선택한 파일에서 가능한 실제 변환만 표시합니다.";
 
   return (
     <section className="border-b border-stone-200 bg-white p-4">
@@ -82,7 +82,7 @@ export function ConversionTypeSelector({
           {displayFiles.map((item) => (
             <div
               key={item.id}
-              className="grid grid-cols-[1fr_auto_220px] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 p-2"
+              className="grid grid-cols-[minmax(0,1fr)_auto_minmax(160px,220px)] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 p-2"
             >
               <span className="truncate text-sm text-stone-800">{item.name}</span>
               <ArrowRight size={16} className="text-emerald-700" />
@@ -90,7 +90,7 @@ export function ConversionTypeSelector({
                 value={individualTargets[item.id] || item.supportedConversions[0] || ""}
                 disabled={item.supportedConversions.length === 0}
                 onChange={(event) => onIndividualTargetChange(item.id, event.target.value as ConversionType)}
-                className="h-8 rounded-md border border-stone-300 bg-white px-2 text-sm text-stone-900"
+                className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-sm text-stone-900"
               >
                 {item.supportedConversions.length === 0 ? (
                   <option value="">지원 불가</option>

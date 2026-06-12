@@ -1,9 +1,15 @@
 import path from "node:path";
 import { app, BrowserWindow } from "electron";
 import { registerConversionHandlers } from "./ipc/conversionHandlers.js";
+import { registerFloatingHandlers } from "./ipc/floatingHandlers.js";
+import { registerPdfToolHandlers } from "./ipc/pdfToolHandlers.js";
 import { ConversionService } from "./services/ConversionService.js";
+import { FloatingWindowService } from "./services/FloatingWindowService.js";
+import { PdfToolService } from "./services/PdfToolService.js";
 
 const conversionService = new ConversionService();
+const pdfToolService = new PdfToolService();
+let floatingService: FloatingWindowService | undefined;
 
 function getAppIconPath(): string {
   if (app.isPackaged) {
@@ -14,21 +20,29 @@ function getAppIconPath(): string {
 }
 
 function createWindow(): BrowserWindow {
+  const iconPath = getAppIconPath();
+  const preloadPath = path.join(__dirname, "../preload/preload.cjs");
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 1040,
     minHeight: 700,
     title: "Convert Smith",
-    icon: getAppIconPath(),
+    icon: iconPath,
     backgroundColor: "#0f172a",
     webPreferences: {
-      preload: path.join(__dirname, "../preload/preload.cjs"),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
     }
   });
+
+  if (!floatingService) {
+    floatingService = new FloatingWindowService(preloadPath, iconPath);
+    registerFloatingHandlers(floatingService);
+  }
+  floatingService.attachMainWindow(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => {
@@ -51,6 +65,7 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(() => {
   registerConversionHandlers(conversionService);
+  registerPdfToolHandlers(pdfToolService);
   createWindow();
 
   app.on("activate", () => {

@@ -7,6 +7,9 @@ import {
   Paragraph,
   TextRun
 } from "docx";
+import sharp from "sharp";
+import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "../services/PdfjsAssetService.js";
+import { PdfiumRenderService } from "../services/PdfiumRenderService.js";
 
 type ProgressCallback = (progress: number, message: string) => void;
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
@@ -14,6 +17,8 @@ const importRuntime = new Function("specifier", "return import(specifier)") as <
 ) => Promise<T>;
 
 export class PdfToDocxEngine {
+  private readonly pdfium = new PdfiumRenderService();
+
   async convertEditableText(
     inputPath: string,
     outputPath: string,
@@ -21,7 +26,7 @@ export class PdfToDocxEngine {
   ): Promise<void> {
     const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
     const data = new Uint8Array(await readFile(inputPath));
-    const document = await pdfjs.getDocument({ data }).promise;
+    const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
     const children: Paragraph[] = [];
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
@@ -64,10 +69,17 @@ export class PdfToDocxEngine {
     outputPath: string,
     onProgress: ProgressCallback
   ): Promise<void> {
+    if (this.pdfium.isAvailable()) {
+      await this.convertVisualPreservationWithPdfium(inputPath, outputPath, onProgress);
+      return;
+    }
+
     const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
-    const { createCanvas } = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+    const canvasModule = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+    preparePdfCanvasFonts(canvasModule);
+    const { createCanvas } = canvasModule;
     const data = new Uint8Array(await readFile(inputPath));
-    const document = await pdfjs.getDocument({ data }).promise;
+    const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
     const children: Paragraph[] = [];
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
@@ -79,6 +91,10 @@ export class PdfToDocxEngine {
       const viewport = page.getViewport({ scale: 2 });
       const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
       const context = canvas.getContext("2d");
+      context.save();
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.restore();
       await page.render({
         canvasContext: context as never,
         viewport
@@ -108,5 +124,38 @@ export class PdfToDocxEngine {
     });
     await writeFile(outputPath, await Packer.toBuffer(doc));
     onProgress(95, "DOCX 파일을 저장했습니다.");
+  }
+  private async convertVisualPreservationWithPdfium(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    const children: Paragraph[] = [];
+    await this.pdfium.renderPages(inputPath, 2, onProgress, async (_pageNumber, image) => {
+      const metadata = await sharp(image).metadata();
+      const width = 595;
+      const height = Math.round(((metadata.height || 842) / Math.max(1, metadata.width || 595)) * width);
+
+      if (children.length > 0) {
+        children.push(new Paragraph({ children: [new PageBreak()] }));
+      }
+      children.push(
+        new Paragraph({
+          children: [
+            new ImageRun({
+              type: "png",
+              data: image,
+              transformation: { width, height }
+            })
+          ]
+        })
+      );
+    });
+
+    const doc = new Document({
+      sections: [{ children }]
+    });
+    await writeFile(outputPath, await Packer.toBuffer(doc));
+    onProgress(95, "PDF 원본 화면을 DOCX에 이미지로 저장했습니다.");
   }
 }

@@ -13,15 +13,28 @@ contextBridge.exposeInMainWorld("convertSmith", {
   openLibreOfficeDownloadPage: () => ipcRenderer.invoke("external:openLibreOfficeDownload"),
   startConversion: (payload) => ipcRenderer.invoke("conversion:start", payload),
   cancelConversion: (jobId) => ipcRenderer.invoke("conversion:cancel", jobId),
+  getPdfInfo: (filePath) => ipcRenderer.invoke("pdfTool:getInfo", filePath),
+  startPdfTool: (payload) => ipcRenderer.invoke("pdfTool:start", payload),
   inspectVideo: (filePath) => ipcRenderer.invoke("video:inspect", filePath),
   getDependencyStatus: (libreOfficePath) =>
     ipcRenderer.invoke("dependencies:status", libreOfficePath),
-  getFilePreview: (filePath) => ipcRenderer.invoke("file:getPreview", filePath),
+  getFilePreview: (filePath, pageNumber) => ipcRenderer.invoke("file:getPreview", filePath, pageNumber),
+  getNativePreviewUrl: (filePath) => ipcRenderer.invoke("file:getNativePreviewUrl", filePath),
   previewFile: (filePath) => ipcRenderer.invoke("file:preview", filePath),
   revealPath: (filePath) => ipcRenderer.invoke("file:reveal", filePath),
+  setFloatingEnabled: (enabled) => ipcRenderer.invoke("floating:setEnabled", enabled),
+  getFloatingEnabled: () => ipcRenderer.invoke("floating:getEnabled"),
+  showMainFromFloating: () => ipcRenderer.invoke("floating:showMain"),
+  moveFloating: (x, y) => ipcRenderer.invoke("floating:move", x, y),
+  getAppIconDataUrl: () => ipcRenderer.invoke("app:getIconDataUrl"),
   onJobUpdate: (listener) => {
     const wrapped = (_event, job) => listener(job);
     ipcRenderer.on("conversion:jobUpdated", wrapped);
     return () => ipcRenderer.removeListener("conversion:jobUpdated", wrapped);
+  },
+  onPdfToolUpdate: (listener) => {
+    const wrapped = (_event, job) => listener(job);
+    ipcRenderer.on("pdfTool:jobUpdated", wrapped);
+    return () => ipcRenderer.removeListener("pdfTool:jobUpdated", wrapped);
   }
 });

@@ -3,6 +3,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import type { PdfImageFormat, PdfPageSize } from "../types/conversion.js";
+import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "../services/PdfjsAssetService.js";
+import { PdfiumRenderService } from "../services/PdfiumRenderService.js";
 
 type ProgressCallback = (progress: number, message: string) => void;
 type CreateNamedOutputPath = (baseName: string, extension: string) => Promise<string>;
@@ -14,6 +16,8 @@ const A4_PORTRAIT: [number, number] = [595.28, 841.89];
 const A4_LANDSCAPE: [number, number] = [841.89, 595.28];
 
 export class PdfEngine {
+  private readonly pdfium = new PdfiumRenderService();
+
   async imagesToPdf(
     inputPaths: string[],
     outputPath: string,
@@ -60,10 +64,16 @@ export class PdfEngine {
     createOutputPath: CreateNamedOutputPath,
     onProgress: ProgressCallback
   ): Promise<string[]> {
+    if (this.pdfium.isAvailable()) {
+      return this.pdfToImagesWithPdfium(inputPath, imageFormat, scale, quality, createOutputPath, onProgress);
+    }
+
     const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
-    const { createCanvas } = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+    const canvasModule = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+    preparePdfCanvasFonts(canvasModule);
+    const { createCanvas } = canvasModule;
     const data = new Uint8Array(await readFile(inputPath));
-    const document = await pdfjs.getDocument({ data }).promise;
+    const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
     const baseName = path.basename(inputPath, path.extname(inputPath));
     const outputPaths: string[] = [];
 
@@ -76,6 +86,10 @@ export class PdfEngine {
       const viewport = page.getViewport({ scale });
       const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
       const context = canvas.getContext("2d");
+      context.save();
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.restore();
 
       await page.render({
         canvasContext: context as never,
@@ -94,6 +108,30 @@ export class PdfEngine {
     }
 
     onProgress(95, "PDF 페이지 이미지를 저장했습니다.");
+    return outputPaths;
+  }
+
+  private async pdfToImagesWithPdfium(
+    inputPath: string,
+    imageFormat: PdfImageFormat,
+    scale: 1 | 2 | 3,
+    quality: number,
+    createOutputPath: CreateNamedOutputPath,
+    onProgress: ProgressCallback
+  ): Promise<string[]> {
+    const baseName = path.basename(inputPath, path.extname(inputPath));
+    const outputPaths: string[] = [];
+    await this.pdfium.renderPages(inputPath, scale, onProgress, async (pageNumber, pngBuffer) => {
+      const pageSuffix = String(pageNumber).padStart(3, "0");
+      const outputPath = await createOutputPath(`${baseName}_page_${pageSuffix}`, imageFormat);
+      const outputBuffer =
+        imageFormat === "jpg"
+          ? await sharp(pngBuffer).flatten({ background: "#ffffff" }).jpeg({ quality }).toBuffer()
+          : pngBuffer;
+      await writeFile(outputPath, outputBuffer);
+      outputPaths.push(outputPath);
+    });
+    onProgress(95, "PDF 페이지를 원본 레이아웃 그대로 이미지로 저장했습니다.");
     return outputPaths;
   }
 

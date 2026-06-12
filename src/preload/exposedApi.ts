@@ -3,7 +3,10 @@ import type {
   DependencyStatus,
   FilePreview,
   FileItem,
+  PdfDocumentInfo,
+  PdfToolJob,
   StartConversionPayload,
+  StartPdfToolPayload,
   VideoInspection
 } from "../main/types/conversion.js";
 
@@ -16,10 +19,19 @@ export interface ConvertSmithApi {
   openLibreOfficeDownloadPage(): Promise<{ ok: boolean; message: string }>;
   startConversion(payload: StartConversionPayload): Promise<ConversionJob>;
   cancelConversion(jobId: string): Promise<boolean>;
+  getPdfInfo(path: string): Promise<PdfDocumentInfo>;
+  startPdfTool(payload: StartPdfToolPayload): Promise<PdfToolJob>;
   inspectVideo(path: string): Promise<VideoInspection>;
   getDependencyStatus(libreOfficePath?: string): Promise<DependencyStatus>;
-  getFilePreview(path: string): Promise<FilePreview>;
+  getFilePreview(path: string, pageNumber?: number): Promise<FilePreview>;
+  getNativePreviewUrl(path: string): Promise<string>;
   previewFile(path: string): Promise<{ ok: boolean; message: string }>;
   revealPath(path: string): Promise<{ ok: boolean; message: string }>;
+  setFloatingEnabled(enabled: boolean): Promise<boolean>;
+  getFloatingEnabled(): Promise<boolean>;
+  showMainFromFloating(): Promise<boolean>;
+  moveFloating(x: number, y: number): Promise<boolean>;
+  getAppIconDataUrl(): Promise<string>;
   onJobUpdate(listener: (job: ConversionJob) => void): () => void;
+  onPdfToolUpdate(listener: (job: PdfToolJob) => void): () => void;
 }

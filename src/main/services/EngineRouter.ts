@@ -27,10 +27,15 @@ export class EngineRouter {
   ): Promise<string[]> {
     switch (job.conversionType) {
       case "mp4_to_mp3":
+      case "wav_to_mp3":
+      case "flac_to_mp3":
+      case "m4a_to_mp3":
         return this.convertEach(job, "mp3", createOutputPath, (input, output) =>
-          this.ffmpeg.convertMp4ToMp3(input, output, onProgress, signal)
+          this.ffmpeg.convertAudioToMp3(input, output, onProgress, signal)
         );
       case "mov_to_mp4":
+      case "webm_to_mp4":
+      case "mkv_to_mp4":
       case "video_compatibility_repair":
         return this.convertEach(job, "mp4", createOutputPath, (input, output) =>
           this.ffmpeg.convertToCompatibleMp4(input, output, onProgress, signal)
@@ -47,6 +52,42 @@ export class EngineRouter {
         return this.convertEach(job, "png", createOutputPath, (input, output) =>
           this.image.jpgToPng(input, output, onProgress)
         );
+      case "image_to_webp":
+        return this.convertEach(job, "webp", createOutputPath, (input, output) =>
+          this.image.imageToWebp(input, output, job.options.imageQuality, onProgress)
+        );
+      case "webp_to_jpg":
+        return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
+          this.image.webpToJpg(input, output, job.options.imageQuality, onProgress)
+        );
+      case "webp_to_png":
+        return this.convertEach(job, "png", createOutputPath, (input, output) =>
+          this.image.webpToPng(input, output, onProgress)
+        );
+      case "avif_to_jpg":
+        return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
+          this.image.avifToJpg(input, output, job.options.imageQuality, onProgress)
+        );
+      case "avif_to_png":
+        return this.convertEach(job, "png", createOutputPath, (input, output) =>
+          this.image.avifToPng(input, output, onProgress)
+        );
+      case "tiff_to_jpg":
+        return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
+          this.image.tiffToJpg(input, output, job.options.imageQuality, onProgress)
+        );
+      case "tiff_to_png":
+        return this.convertEach(job, "png", createOutputPath, (input, output) =>
+          this.image.tiffToPng(input, output, onProgress)
+        );
+      case "bmp_to_jpg":
+        return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
+          this.image.bmpToJpg(input, output, job.options.imageQuality, onProgress)
+        );
+      case "bmp_to_png":
+        return this.convertEach(job, "png", createOutputPath, (input, output) =>
+          this.image.bmpToPng(input, output, onProgress)
+        );
       case "images_to_pdf": {
         const outputPath = await createNamedOutputPath(this.makeCombinedPdfBase(job.sourcePaths), "pdf");
         await this.pdf.imagesToPdf(job.sourcePaths, outputPath, job.options.pdfPageSize, onProgress);
@@ -62,12 +103,21 @@ export class EngineRouter {
           onProgress
         );
       case "docx_to_pdf":
-      case "xlsx_to_pdf": {
+      case "xlsx_to_pdf":
+      case "pptx_to_pdf": {
         if (!job.options.libreOfficePath) {
           throw new Error("LibreOffice를 찾을 수 없어 PDF 변환을 진행할 수 없습니다.");
         }
         return this.convertEach(job, "pdf", createOutputPath, (input, output) =>
           this.office.convertToPdf(input, output, job.options.libreOfficePath!, onProgress, signal)
+        );
+      }
+      case "xlsx_to_csv": {
+        if (!job.options.libreOfficePath) {
+          throw new Error("LibreOffice를 찾을 수 없어 CSV 변환을 진행할 수 없습니다.");
+        }
+        return this.convertEach(job, "csv", createOutputPath, (input, output) =>
+          this.office.convertToCsv(input, output, job.options.libreOfficePath!, onProgress, signal)
         );
       }
       case "pdf_to_docx": {

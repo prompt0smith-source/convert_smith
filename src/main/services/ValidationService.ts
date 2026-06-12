@@ -7,14 +7,30 @@ import { FileSignatureService } from "./FileSignatureService.js";
 const SUPPORTED_INPUTS: Record<ConversionType, string[]> = {
   pdf_to_docx: [".pdf"],
   docx_to_pdf: [".docx", ".doc"],
-  images_to_pdf: [".jpg", ".jpeg", ".png"],
+  images_to_pdf: [".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".bmp"],
   pdf_to_images: [".pdf"],
   heic_to_jpg: [".heic", ".heif"],
   png_to_jpg: [".png"],
   jpg_to_png: [".jpg", ".jpeg"],
+  image_to_webp: [".jpg", ".jpeg", ".png"],
+  webp_to_jpg: [".webp"],
+  webp_to_png: [".webp"],
+  avif_to_jpg: [".avif"],
+  avif_to_png: [".avif"],
+  tiff_to_jpg: [".tif", ".tiff"],
+  tiff_to_png: [".tif", ".tiff"],
+  bmp_to_jpg: [".bmp"],
+  bmp_to_png: [".bmp"],
   mp4_to_mp3: [".mp4"],
   mov_to_mp4: [".mov"],
+  webm_to_mp4: [".webm"],
+  mkv_to_mp4: [".mkv"],
+  wav_to_mp3: [".wav"],
+  flac_to_mp3: [".flac"],
+  m4a_to_mp3: [".m4a"],
   xlsx_to_pdf: [".xlsx", ".xls"],
+  xlsx_to_csv: [".xlsx", ".xls"],
+  pptx_to_pdf: [".pptx", ".ppt"],
   video_compatibility_repair: [".mp4", ".mov", ".mkv", ".webm", ".m4v"]
 };
 
@@ -91,13 +107,19 @@ export class ValidationService {
       if (extension === ".png") {
         return this.booleanResult(await this.signatures.isPng(outputPath), "PNG 파일 검증에 실패했습니다.");
       }
+      if (extension === ".webp") {
+        return this.booleanResult(await this.signatures.isWebp(outputPath), "WEBP 파일 검증에 실패했습니다.");
+      }
       if (extension === ".docx" || extension === ".xlsx") {
         return this.booleanResult(await this.signatures.isZip(outputPath), "Office 문서 검증에 실패했습니다.");
+      }
+      if (extension === ".csv") {
+        return { ok: true, message: "CSV 파일을 검증했습니다." };
       }
       if (extension === ".mp4" || extension === ".mp3") {
         const media = await this.validateMediaReadable(outputPath);
         if (!media.ok) return media;
-        if (conversionType === "video_compatibility_repair" || conversionType === "mov_to_mp4") {
+        if (["video_compatibility_repair", "mov_to_mp4", "webm_to_mp4", "mkv_to_mp4"].includes(conversionType)) {
           return this.validateCompatibleMp4(outputPath);
         }
         return media;

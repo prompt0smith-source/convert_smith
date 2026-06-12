@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { mkdir, stat, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
@@ -22,6 +23,7 @@ import { ImageEngine } from "../engines/ImageEngine.js";
 import { PdfEngine } from "../engines/PdfEngine.js";
 import { OfficeEngine } from "../engines/OfficeEngine.js";
 import { PdfToDocxEngine } from "../engines/PdfToDocxEngine.js";
+import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
 
 type JobUpdateCallback = (job: ConversionJob) => void;
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
@@ -36,7 +38,8 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   pdfToDocxMode: "editable_text",
   videoCompatibilityMode: true,
   overwritePolicy: "increment",
-  sortMode: "basic"
+  sortMode: "basic",
+  useDatedSubfolder: false
 };
 
 export class ConversionService {
@@ -86,7 +89,7 @@ export class ConversionService {
     return this.ffmpeg.inspect(resolved);
   }
 
-  async getFilePreview(filePath: string): Promise<FilePreview> {
+  async getFilePreview(filePath: string, pageNumber = 1): Promise<FilePreview> {
     const resolved = await this.validation.validateInputPath(filePath);
     const info = await stat(resolved);
     const extension = path.extname(resolved).toLowerCase();
@@ -126,11 +129,16 @@ export class ConversionService {
         const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
         const { createCanvas } = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
         const data = new Uint8Array(await readFile(resolved));
-        const document = await pdfjs.getDocument({ data }).promise;
-        const page = await document.getPage(1);
+        const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
+        const safePageNumber = Math.max(1, Math.min(document.numPages, Math.trunc(pageNumber) || 1));
+        const page = await document.getPage(safePageNumber);
         const viewport = page.getViewport({ scale: 3 });
         const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
         const context = canvas.getContext("2d");
+        context.save();
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.restore();
         await page.render({
           canvasContext: context as never,
           viewport
@@ -140,9 +148,10 @@ export class ConversionService {
           ...basePreview,
           previewType: "pdf_page",
           dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
-          message: "PDF 1페이지 미리보기",
+          message: `PDF ${safePageNumber}페이지 미리보기`,
           details: {
-            pages: document.numPages
+            pages: document.numPages,
+            page: safePageNumber
           }
         };
       } catch (error) {
@@ -198,6 +207,11 @@ export class ConversionService {
     };
   }
 
+  async getNativePreviewUrl(filePath: string): Promise<string> {
+    const resolved = await this.validation.validateInputPath(filePath);
+    return pathToFileURL(resolved).toString();
+  }
+
   cancelJob(jobId: string): boolean {
     const controller = this.controllers.get(jobId);
     if (!controller) return false;
@@ -238,13 +252,13 @@ export class ConversionService {
     };
 
     try {
-      const datedOutputDir = await this.createDatedOutputDir(outputDir);
+      const targetOutputDir = options.useDatedSubfolder ? await this.createDatedOutputDir(outputDir) : outputDir;
       emit({ status: "running", progress: 2, message: "출력 폴더를 준비했습니다." });
 
       const createOutputPath = async (sourcePath: string, extension: string) =>
-        this.createUniqueOutputPath(datedOutputDir, path.basename(sourcePath, path.extname(sourcePath)), extension);
+        this.createUniqueOutputPath(targetOutputDir, path.basename(sourcePath, path.extname(sourcePath)), extension);
       const createNamedOutputPath = async (baseName: string, extension: string) =>
-        this.createUniqueOutputPath(datedOutputDir, path.basename(baseName, path.extname(baseName)), extension, false);
+        this.createUniqueOutputPath(targetOutputDir, path.basename(baseName, path.extname(baseName)), extension, false);
 
       const outputPaths = await this.router.convert(
         job,
@@ -343,9 +357,10 @@ export class ConversionService {
     if (extension === ".pdf") return "pdf";
     if ([".doc", ".docx"].includes(extension)) return "word";
     if ([".xls", ".xlsx"].includes(extension)) return "excel";
-    if ([".jpg", ".jpeg", ".png", ".heic", ".heif"].includes(extension)) return "image";
+    if ([".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".avif", ".tif", ".tiff", ".bmp"].includes(extension)) return "image";
     if ([".mp4", ".mov", ".mkv", ".webm", ".m4v"].includes(extension)) return "video";
-    if ([".mp3", ".wav", ".aac"].includes(extension)) return "audio";
+    if ([".mp3", ".wav", ".aac", ".flac", ".m4a"].includes(extension)) return "audio";
+    if ([".ppt", ".pptx"].includes(extension)) return "presentation";
     return "other";
   }
 

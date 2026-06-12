@@ -1,12 +1,15 @@
-import { ExternalLink, FileSearch, ImageIcon, Loader2, RotateCcw } from "lucide-react";
+import { ExternalLink, FileSearch, ImageIcon, Loader2, RotateCcw, RotateCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
-import type { FileItem, FilePreview } from "../../main/types/conversion";
+import type { PointerEvent as ReactPointerEvent, SyntheticEvent } from "react";
+import type { FileItem, FilePreview, PdfRotation } from "../../main/types/conversion";
 import { formatBytes } from "../lib/formatLabels";
 
 interface PreviewPanelProps {
   selectedFile?: FileItem;
   onOpenExternal: (item: FileItem) => void;
+  pdfPageNumber?: number;
+  pdfRotation?: PdfRotation;
+  onRotatePdfPreview?: () => void;
 }
 
 interface Size {
@@ -20,25 +23,38 @@ interface Offset {
 }
 
 const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 8;
+const MAX_ZOOM = 10;
 
-export function PreviewPanel({ selectedFile, onOpenExternal }: PreviewPanelProps): JSX.Element {
+export function PreviewPanel({
+  selectedFile,
+  onOpenExternal,
+  pdfPageNumber = 1,
+  pdfRotation = 0,
+  onRotatePdfPreview
+}: PreviewPanelProps): JSX.Element {
   const [preview, setPreview] = useState<FilePreview>();
+  const [nativePdfUrl, setNativePdfUrl] = useState<string>();
   const [error, setError] = useState<string>();
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setPreview(undefined);
+    setNativePdfUrl(undefined);
     setError(undefined);
-    if (!selectedFile) return;
+    if (!selectedFile) return undefined;
 
     setIsLoading(true);
-    window.convertSmith
-      .getFilePreview(selectedFile.path)
-      .then((result) => {
-        if (!cancelled) setPreview(result);
-      })
+    const request =
+      selectedFile.extension === ".pdf"
+        ? window.convertSmith.getNativePreviewUrl(selectedFile.path).then((url) => {
+            if (!cancelled) setNativePdfUrl(url);
+          })
+        : window.convertSmith.getFilePreview(selectedFile.path).then((result) => {
+            if (!cancelled) setPreview(result);
+          });
+
+    request
       .catch((previewError: unknown) => {
         if (!cancelled) {
           setError(previewError instanceof Error ? previewError.message : "미리보기를 만들지 못했습니다.");
@@ -69,20 +85,37 @@ export function PreviewPanel({ selectedFile, onOpenExternal }: PreviewPanelProps
     );
   }
 
+  const canRotatePdf = selectedFile.extension === ".pdf" && Boolean(onRotatePdfPreview);
+
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-stone-50">
       <PreviewHeader
         title="미리보기"
-        subtitle={`${selectedFile.name} · ${formatBytes(selectedFile.size)}`}
+        subtitle={`${selectedFile.name} · ${formatBytes(selectedFile.size)}${
+          selectedFile.extension === ".pdf" ? ` · ${pdfPageNumber}페이지` : ""
+        }`}
         action={
-          <button
-            type="button"
-            onClick={() => onOpenExternal(selectedFile)}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-700 hover:bg-stone-100"
-          >
-            <ExternalLink size={15} />
-            외부 앱
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {canRotatePdf && (
+              <button
+                type="button"
+                onClick={onRotatePdfPreview}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-700 hover:bg-stone-100"
+                aria-label="PDF 페이지 90도 회전"
+              >
+                <RotateCw size={15} />
+                회전
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenExternal(selectedFile)}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-700 hover:bg-stone-100"
+            >
+              <ExternalLink size={15} />
+              외부 앱
+            </button>
+          </div>
         }
       />
 
@@ -91,7 +124,7 @@ export function PreviewPanel({ selectedFile, onOpenExternal }: PreviewPanelProps
           <div className="flex h-full items-center justify-center rounded-md border border-stone-200 bg-white">
             <div className="flex items-center gap-2 text-sm text-stone-600">
               <Loader2 size={18} className="animate-spin" />
-              미리보기를 만드는 중입니다.
+              미리보기를 여는 중입니다.
             </div>
           </div>
         )}
@@ -102,7 +135,13 @@ export function PreviewPanel({ selectedFile, onOpenExternal }: PreviewPanelProps
           </div>
         )}
 
-        {!isLoading && !error && preview && <PreviewBody preview={preview} />}
+        {!isLoading && !error && selectedFile.extension === ".pdf" && nativePdfUrl && (
+          <NativePdfPreview url={nativePdfUrl} pageNumber={pdfPageNumber} rotation={pdfRotation} />
+        )}
+
+        {!isLoading && !error && selectedFile.extension !== ".pdf" && preview && (
+          <PreviewBody preview={preview} />
+        )}
       </div>
     </section>
   );
@@ -124,6 +163,34 @@ function PreviewHeader({
         {subtitle && <p className="mt-1 truncate text-sm text-stone-500">{subtitle}</p>}
       </div>
       {action}
+    </div>
+  );
+}
+
+function NativePdfPreview({
+  url,
+  pageNumber,
+  rotation
+}: {
+  url: string;
+  pageNumber: number;
+  rotation: PdfRotation;
+}): JSX.Element {
+  const fragment = `#page=${Math.max(1, Math.trunc(pageNumber) || 1)}&zoom=page-fit`;
+  const framedUrl = `${url}${fragment}`;
+
+  return (
+    <div className="h-full overflow-hidden rounded-md border border-stone-200 bg-white">
+      <iframe
+        key={framedUrl}
+        src={framedUrl}
+        title="PDF 원본 미리보기"
+        className="h-full w-full border-0 bg-white"
+        style={{
+          transform: rotation ? `rotate(${rotation}deg)` : undefined,
+          transformOrigin: "center center"
+        }}
+      />
     </div>
   );
 }
@@ -202,21 +269,30 @@ function ZoomableImagePreview({ preview }: { preview: FilePreview }): JSX.Elemen
     setOffset((current) => clampOffset(current, zoom, baseSize, viewerSize));
   }, [baseSize, viewerSize, zoom]);
 
+  useEffect(() => {
+    const node = viewerRef.current;
+    if (!node) return undefined;
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.14 : 0.88;
+      const nextZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
+      setZoom(nextZoom);
+      setOffset((current) => clampOffset(current, nextZoom, baseSize, viewerSize));
+    };
+
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, [baseSize, viewerSize, zoom]);
+
   const resetView = () => {
     setZoom(1);
     setOffset({ x: 0, y: 0 });
   };
 
-  const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const factor = event.deltaY < 0 ? 1.14 : 0.88;
-    const nextZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
-    setZoom(nextZoom);
-    setOffset((current) => clampOffset(current, nextZoom, baseSize, viewerSize));
-  };
-
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       x: event.clientX,
@@ -244,7 +320,7 @@ function ZoomableImagePreview({ preview }: { preview: FilePreview }): JSX.Elemen
     setIsPanning(false);
   };
 
-  const onImageLoad = (event: React.SyntheticEvent<HTMLImageElement>) => {
+  const onImageLoad = (event: SyntheticEvent<HTMLImageElement>) => {
     const image = event.currentTarget;
     setNaturalSize({
       width: image.naturalWidth,
@@ -260,7 +336,7 @@ function ZoomableImagePreview({ preview }: { preview: FilePreview }): JSX.Elemen
           type="button"
           onClick={resetView}
           className="inline-flex h-6 w-6 items-center justify-center rounded hover:bg-stone-100"
-          aria-label="미리보기 확대 초기화"
+          aria-label="미리보기 확대 상태 초기화"
         >
           <RotateCcw size={13} />
         </button>
@@ -272,7 +348,6 @@ function ZoomableImagePreview({ preview }: { preview: FilePreview }): JSX.Elemen
           "flex h-full w-full select-none items-center justify-center overflow-hidden bg-stone-100",
           isPanning ? "cursor-grabbing" : "cursor-grab"
         ].join(" ")}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPan}
