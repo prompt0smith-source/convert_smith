@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import type { ConversionJob, StartConversionPayload } from "../types/conversion.js";
 import { ConversionService } from "../services/ConversionService.js";
 import { DependencyService } from "../services/DependencyService.js";
+import { PathAccessRegistry } from "../services/PathAccessRegistry.js";
+import { PayloadValidationService } from "../services/PayloadValidationService.js";
 
 const LIBRE_OFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/";
 
@@ -42,15 +44,18 @@ const OPEN_FILE_FILTERS = [
   { name: "모든 파일", extensions: ["*"] }
 ];
 
-export function registerConversionHandlers(service: ConversionService): void {
+export function registerConversionHandlers(service: ConversionService, pathAccess: PathAccessRegistry): void {
   const dependencies = new DependencyService();
+  const payloadValidation = new PayloadValidationService();
 
   ipcMain.handle("files:resolveDropped", async (_event, paths: unknown, dropIndexOffset: unknown) => {
     if (!Array.isArray(paths) || !paths.every((item) => typeof item === "string")) {
       throw new Error("파일 목록이 올바르지 않습니다.");
     }
     const offset = typeof dropIndexOffset === "number" && Number.isFinite(dropIndexOffset) ? dropIndexOffset : 0;
-    return service.resolveDroppedFiles(paths, offset);
+    const items = await service.resolveDroppedFiles(paths, offset);
+    pathAccess.registerPaths(items.map((item) => item.path));
+    return items;
   });
 
   ipcMain.handle("files:resolveClipboard", async (_event, dropIndexOffset: unknown, includeTextPaths: unknown) => {
@@ -61,7 +66,9 @@ export function registerConversionHandlers(service: ConversionService): void {
       if (imagePath) paths.push(imagePath);
     }
     if (paths.length === 0) return [];
-    return service.resolveDroppedFiles(paths, offset);
+    const items = await service.resolveDroppedFiles(paths, offset);
+    pathAccess.registerPaths(items.map((item) => item.path));
+    return items;
   });
 
   ipcMain.handle("dialog:selectFiles", async () => {
@@ -71,7 +78,9 @@ export function registerConversionHandlers(service: ConversionService): void {
       filters: OPEN_FILE_FILTERS
     });
     if (result.canceled) return [];
-    return service.resolveDroppedFiles(result.filePaths, 0);
+    const items = await service.resolveDroppedFiles(result.filePaths, 0);
+    pathAccess.registerPaths(items.map((item) => item.path));
+    return items;
   });
 
   ipcMain.handle("dialog:selectOutputDirectory", async () => {
@@ -87,7 +96,7 @@ export function registerConversionHandlers(service: ConversionService): void {
       title: "LibreOffice soffice 실행 파일 선택",
       properties: ["openFile"],
       filters: [
-        { name: "LibreOffice soffice", extensions: process.platform === "win32" ? ["exe"] : ["*"] },
+        { name: "LibreOffice soffice", extensions: process.platform === "win32" ? ["exe", "com"] : ["*"] },
         { name: "모든 파일", extensions: ["*"] }
       ]
     });
@@ -107,11 +116,16 @@ export function registerConversionHandlers(service: ConversionService): void {
   });
 
   ipcMain.handle("conversion:start", async (event, payload: StartConversionPayload) => {
-    return service.convert(payload, (job: ConversionJob) => {
+    const normalizedPayload = payloadValidation.normalizeConversionPayload(payload);
+    const job = await service.convert(normalizedPayload, (job: ConversionJob) => {
       if (!event.sender.isDestroyed()) {
         event.sender.send("conversion:jobUpdated", job);
       }
     });
+    if (job.status === "success") {
+      pathAccess.registerPaths(job.outputPaths);
+    }
+    return job;
   });
 
   ipcMain.handle("conversion:cancel", async (_event, jobId: unknown) => {
@@ -123,7 +137,7 @@ export function registerConversionHandlers(service: ConversionService): void {
     if (typeof filePath !== "string") {
       throw new Error("파일 경로가 올바르지 않습니다.");
     }
-    return service.inspectVideo(filePath);
+    return service.inspectVideo(pathAccess.assertAllowed(filePath));
   });
 
   ipcMain.handle("dependencies:status", async (_event, libreOfficePath: unknown) => {
@@ -134,14 +148,14 @@ export function registerConversionHandlers(service: ConversionService): void {
     if (typeof filePath !== "string") {
       throw new Error("파일 경로가 올바르지 않습니다.");
     }
-    return service.getFilePreview(filePath, typeof pageNumber === "number" ? pageNumber : 1);
+    return service.getFilePreview(pathAccess.assertAllowed(filePath), typeof pageNumber === "number" ? pageNumber : 1);
   });
 
   ipcMain.handle("file:getNativePreviewUrl", async (_event, filePath: unknown) => {
     if (typeof filePath !== "string") {
       throw new Error("파일 경로가 올바르지 않습니다.");
     }
-    return service.getNativePreviewUrl(filePath);
+    return service.getNativePreviewUrl(pathAccess.assertAllowed(filePath));
   });
 
   ipcMain.handle("file:preview", async (_event, filePath: unknown) => {
@@ -149,8 +163,8 @@ export function registerConversionHandlers(service: ConversionService): void {
       return { ok: false, message: "파일 경로가 올바르지 않습니다." };
     }
     try {
-      const [item] = await service.resolveDroppedFiles([filePath], 0);
-      const message = await shell.openPath(item.path);
+      const resolved = pathAccess.assertAllowed(filePath);
+      const message = await shell.openPath(resolved);
       return message ? { ok: false, message } : { ok: true, message: "파일을 열었습니다." };
     } catch (error) {
       return {
@@ -165,8 +179,8 @@ export function registerConversionHandlers(service: ConversionService): void {
       return { ok: false, message: "파일 경로가 올바르지 않습니다." };
     }
     try {
-      const [item] = await service.resolveDroppedFiles([filePath], 0);
-      shell.showItemInFolder(item.path);
+      const resolved = pathAccess.assertAllowed(filePath);
+      shell.showItemInFolder(resolved);
       return { ok: true, message: "폴더에서 파일을 표시했습니다." };
     } catch (error) {
       return {

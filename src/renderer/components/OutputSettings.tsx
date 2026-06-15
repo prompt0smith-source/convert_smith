@@ -24,6 +24,8 @@ const QUALITY_CONVERSIONS: ConversionType[] = [
   "png_to_jpg",
   "pdf_to_images",
   "image_to_webp",
+  "jpg_optimize",
+  "webp_optimize",
   "webp_to_jpg",
   "avif_to_jpg",
   "tiff_to_jpg",

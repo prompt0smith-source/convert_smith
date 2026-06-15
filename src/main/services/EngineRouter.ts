@@ -60,6 +60,18 @@ export class EngineRouter {
         return this.convertEach(job, "webp", createOutputPath, (input, output) =>
           this.image.imageToWebp(input, output, job.options.imageQuality, onProgress)
         );
+      case "jpg_optimize":
+        return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
+          this.image.optimizeJpg(input, output, job.options.imageQuality, onProgress)
+        );
+      case "png_optimize":
+        return this.convertEach(job, "png", createOutputPath, (input, output) =>
+          this.image.optimizePng(input, output, onProgress)
+        );
+      case "webp_optimize":
+        return this.convertEach(job, "webp", createOutputPath, (input, output) =>
+          this.image.optimizeWebp(input, output, job.options.imageQuality, onProgress)
+        );
       case "webp_to_jpg":
         return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
           this.image.webpToJpg(input, output, job.options.imageQuality, onProgress)

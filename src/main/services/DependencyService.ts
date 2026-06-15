@@ -125,7 +125,7 @@ export class DependencyService {
 
   private async expandManualLibreOfficePath(rawPath: string): Promise<string[]> {
     const normalized = rawPath.trim().replace(/^["']|["']$/g, "");
-    if (!normalized) return [];
+    if (!normalized || normalized.includes("\0")) return [];
 
     if (await isDirectory(normalized)) {
       if (process.platform === "win32") {
@@ -145,6 +145,9 @@ export class DependencyService {
     const dirname = path.dirname(normalized);
     if (process.platform === "win32") {
       const baseName = path.basename(normalized).toLowerCase();
+      if (baseName !== "soffice.exe" && baseName !== "soffice.com") {
+        return [];
+      }
       const siblingCom = path.join(dirname, "soffice.com");
       const siblingExe = path.join(dirname, "soffice.exe");
       const candidates =
@@ -156,6 +159,10 @@ export class DependencyService {
       return [...new Set(candidates)];
     }
 
+    const baseName = path.basename(normalized).toLowerCase();
+    if (baseName !== "soffice") {
+      return [];
+    }
     const siblingSoffice = path.join(dirname, "soffice");
     return [normalized, siblingSoffice];
   }
@@ -193,11 +200,18 @@ export class DependencyService {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
+        const trimmedOutput = output.trim();
+        const looksLikeLibreOffice = /libreoffice|soffice/i.test(trimmedOutput);
         resolve({
-          available: code === 0,
+          available: code === 0 && looksLikeLibreOffice,
           path: command,
-          version: output.trim(),
-          error: code === 0 ? undefined : `종료 코드 ${code}${output.trim() ? `: ${output.trim()}` : ""}`
+          version: trimmedOutput,
+          error:
+            code !== 0
+              ? `종료 코드 ${code}${trimmedOutput ? `: ${trimmedOutput}` : ""}`
+              : looksLikeLibreOffice
+                ? undefined
+                : "선택한 파일이 LibreOffice soffice 실행 파일인지 확인하지 못했습니다."
         });
       });
     });

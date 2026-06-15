@@ -8,6 +8,9 @@ export type ConversionType =
   | "png_to_jpg"
   | "jpg_to_png"
   | "image_to_webp"
+  | "jpg_optimize"
+  | "png_optimize"
+  | "webp_optimize"
   | "webp_to_jpg"
   | "webp_to_png"
   | "avif_to_jpg"
@@ -84,6 +87,7 @@ export interface ConversionJob {
   outputPaths: string[];
   error?: string;
   technicalDetails?: string;
+  resultReport?: ConversionResultReport;
   createdAt: number;
   completedAt?: number;
   options: ConversionOptions;
@@ -122,9 +126,22 @@ export interface PdfToolJob {
   outputPaths: string[];
   error?: string;
   technicalDetails?: string;
+  resultReport?: ConversionResultReport;
   createdAt: number;
   completedAt?: number;
   options: PdfToolOptions;
+}
+
+export interface ConversionResultReport {
+  sourceCount: number;
+  outputCount: number;
+  inputBytes: number;
+  outputBytes: number;
+  byteDelta: number;
+  byteDeltaPercent: number;
+  durationMs: number;
+  validationPassed: boolean;
+  validationMessages: string[];
 }
 
 export interface PdfDocumentInfo {

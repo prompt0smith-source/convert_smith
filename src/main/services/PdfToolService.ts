@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   PdfDocumentInfo,
   PdfRotation,
+  ConversionResultReport,
   PdfToolJob,
   PdfToolOptions,
   StartPdfToolPayload
@@ -133,9 +134,11 @@ export class PdfToolService {
         );
       }
 
+      const validationMessages: string[] = [];
       emit({ progress: 96, message: "PDF 출력 파일을 검증하는 중입니다.", outputPaths });
       for (const outputPath of outputPaths) {
         const validation = await this.validation.validateOutput("images_to_pdf", outputPath);
+        validationMessages.push(validation.message);
         if (!validation.ok) {
           throw new Error(`${validation.message}\n${validation.technicalDetails || ""}`.trim());
         }
@@ -146,17 +149,20 @@ export class PdfToolService {
         progress: 100,
         message: "PDF 작업과 검증이 완료되었습니다.",
         outputPaths,
+        resultReport: await this.buildResultReport(sourcePaths, outputPaths, job.createdAt, true, validationMessages),
         completedAt: Date.now()
       });
     } catch (error) {
       const cleanedCount = await this.cleanupCreatedOutputs(createdOutputPaths, sourcePaths);
+      const userError = error instanceof Error ? error.message : String(error);
       emit({
         status: "failed",
         progress: Math.max(job.progress, 1),
         message: `PDF 작업을 완료하지 못했습니다.${cleanedCount > 0 ? " 불완전한 출력 파일은 자동 정리했습니다." : ""}`,
         outputPaths: [],
-        error: error instanceof Error ? error.message : String(error),
+        error: userError,
         technicalDetails: error instanceof Error ? error.stack || error.message : String(error),
+        resultReport: await this.buildResultReport(sourcePaths, [], job.createdAt, false, [userError]),
         completedAt: Date.now()
       });
     }
@@ -258,5 +264,40 @@ export class PdfToolService {
       }
     }
     return cleanedCount;
+  }
+
+  private async buildResultReport(
+    sourcePaths: string[],
+    outputPaths: string[],
+    startedAt: number,
+    validationPassed: boolean,
+    validationMessages: string[]
+  ): Promise<ConversionResultReport> {
+    const inputBytes = await this.sumFileSizes(sourcePaths);
+    const outputBytes = await this.sumFileSizes(outputPaths);
+    const byteDelta = inputBytes - outputBytes;
+    return {
+      sourceCount: sourcePaths.length,
+      outputCount: outputPaths.length,
+      inputBytes,
+      outputBytes,
+      byteDelta,
+      byteDeltaPercent: inputBytes > 0 ? (byteDelta / inputBytes) * 100 : 0,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      validationPassed,
+      validationMessages
+    };
+  }
+
+  private async sumFileSizes(filePaths: string[]): Promise<number> {
+    let total = 0;
+    for (const filePath of filePaths) {
+      try {
+        total += (await stat(filePath)).size;
+      } catch {
+        // Missing files should not prevent reporting the original result.
+      }
+    }
+    return total;
   }
 }

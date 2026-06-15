@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -38,6 +38,20 @@ const service = new ConversionService();
 const pngPreview = await service.getFilePreview(pngInput);
 assertPreview("PNG preview", pngPreview);
 
+const emptyInput = path.join(root, "empty.png");
+await writeFile(emptyInput, Buffer.alloc(0));
+await assertRejects("empty file failure", () =>
+  service.convert(
+    {
+      sourcePaths: [emptyInput],
+      outputDir: root,
+      conversionType: "png_to_jpg",
+      options
+    },
+    () => undefined
+  )
+);
+
 const pngJob = await service.convert(
   {
     sourcePaths: [pngInput],
@@ -60,6 +74,43 @@ const webpJob = await service.convert(
 );
 assertSuccess("PNG -> WEBP", webpJob);
 
+const jpgInput = path.join(root, "sample.jpg");
+await sharp(pngInput).jpeg({ quality: 95 }).toFile(jpgInput);
+const jpgOptimizeJob = await service.convert(
+  {
+    sourcePaths: [jpgInput],
+    outputDir: root,
+    conversionType: "jpg_optimize",
+    options: { ...options, imageQuality: 75 }
+  },
+  () => undefined
+);
+assertSuccess("JPG optimize", jpgOptimizeJob);
+
+const pngOptimizeJob = await service.convert(
+  {
+    sourcePaths: [pngInput],
+    outputDir: root,
+    conversionType: "png_optimize",
+    options
+  },
+  () => undefined
+);
+assertSuccess("PNG optimize", pngOptimizeJob);
+
+const webpInput = path.join(root, "sample.webp");
+await sharp(pngInput).webp({ quality: 95 }).toFile(webpInput);
+const webpOptimizeJob = await service.convert(
+  {
+    sourcePaths: [webpInput],
+    outputDir: root,
+    conversionType: "webp_optimize",
+    options: { ...options, imageQuality: 75 }
+  },
+  () => undefined
+);
+assertSuccess("WEBP optimize", webpOptimizeJob);
+
 const pdfInput = path.join(root, "sample.pdf");
 const pdfDoc = await PDFDocument.create();
 const page = pdfDoc.addPage([360, 220]);
@@ -74,6 +125,20 @@ page.drawText("Convert Smith PDF Preview", {
 await writeFile(pdfInput, await pdfDoc.save());
 const pdfPreview = await service.getFilePreview(pdfInput);
 assertPreview("PDF preview", pdfPreview);
+
+const fakePdfInput = path.join(root, "fake.pdf");
+await writeFile(fakePdfInput, Buffer.from("not a real pdf"));
+const fakePdfJob = await service.convert(
+  {
+    sourcePaths: [fakePdfInput],
+    outputDir: root,
+    conversionType: "pdf_to_images",
+    options: { ...options, outputName: "fake_pdf_failure" }
+  },
+  () => undefined
+);
+assertFailed("fake PDF failure", fakePdfJob);
+await assertNoFilesStartingWith("failed jobs do not leave incomplete output files", "fake_pdf_failure");
 
 const readingOrderPdfInput = path.join(root, "reading-order.pdf");
 const readingOrderPdf = await PDFDocument.create();
@@ -239,6 +304,9 @@ assertSuccess("WEBM -> MP4", webmJob);
 console.log("Smoke test passed");
 console.log(`PNG -> JPG: ${pngJob.outputPaths[0]}`);
 console.log(`PNG -> WEBP: ${webpJob.outputPaths[0]}`);
+console.log(`JPG optimize: ${jpgOptimizeJob.outputPaths[0]}`);
+console.log(`PNG optimize: ${pngOptimizeJob.outputPaths[0]}`);
+console.log(`WEBP optimize: ${webpOptimizeJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX reading order: ${readingOrderJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX text/image separation: ${layeredJob.outputPaths[0]}`);
 console.log(`PDF merge: ${mergeJob.outputPaths[0]}`);
@@ -250,11 +318,60 @@ async function assertSuccess(label, job) {
   if (job.status !== "success") {
     throw new Error(`${label} failed: ${job.error || job.message}`);
   }
+  assertResultReport(label, job, true);
   for (const outputPath of job.outputPaths) {
     const info = await stat(outputPath);
     if (info.size <= 0) {
       throw new Error(`${label} produced an empty output: ${outputPath}`);
     }
+  }
+}
+
+function assertFailed(label, job) {
+  if (job.status !== "failed") {
+    throw new Error(`${label} expected failure, got ${job.status}.`);
+  }
+  assertResultReport(label, job, false);
+  if (job.outputPaths.length !== 0) {
+    throw new Error(`${label} kept output paths after failure: ${job.outputPaths.join(", ")}`);
+  }
+}
+
+function assertResultReport(label, job, expectedValidationPassed) {
+  if (!job.resultReport) {
+    throw new Error(`${label} did not include a result report.`);
+  }
+  if (job.resultReport.validationPassed !== expectedValidationPassed) {
+    throw new Error(`${label} result report validation flag was wrong.`);
+  }
+  if (job.resultReport.sourceCount < 1) {
+    throw new Error(`${label} result report did not count source files.`);
+  }
+  if (job.resultReport.durationMs < 0) {
+    throw new Error(`${label} result report duration was invalid.`);
+  }
+  if (!Number.isFinite(job.resultReport.byteDelta) || !Number.isFinite(job.resultReport.byteDeltaPercent)) {
+    throw new Error(`${label} result report did not include a valid byte difference.`);
+  }
+  if (expectedValidationPassed && job.resultReport.outputCount !== job.outputPaths.length) {
+    throw new Error(`${label} result report output count was invalid.`);
+  }
+}
+
+async function assertRejects(label, run) {
+  try {
+    await run();
+  } catch {
+    return;
+  }
+  throw new Error(`${label} unexpectedly succeeded.`);
+}
+
+async function assertNoFilesStartingWith(label, prefix) {
+  const files = await readdir(root);
+  const leaked = files.filter((file) => file.startsWith(prefix));
+  if (leaked.length > 0) {
+    throw new Error(`${label}: ${leaked.join(", ")}`);
   }
 }
 

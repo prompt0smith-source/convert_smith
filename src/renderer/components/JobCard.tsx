@@ -1,6 +1,6 @@
 import { CheckCircle2, CircleAlert, CircleStop, FolderOpen, Loader2, X } from "lucide-react";
 import type { ConversionJob } from "../../main/types/conversion";
-import { conversionLabels } from "../lib/formatLabels";
+import { conversionLabels, formatBytes } from "../lib/formatLabels";
 
 interface JobCardProps {
   job: ConversionJob;
@@ -29,7 +29,7 @@ export function JobCard({ job, onCancel, onReveal, onCopy }: JobCardProps): JSX.
               {conversionLabels[job.conversionType]}
             </h3>
           </div>
-          <p className={`mt-1 text-sm ${statusColor}`}>{job.message}</p>
+          <p className={`mt-1 text-sm ${statusColor}`}>{job.status === "failed" && job.error ? job.error : job.message}</p>
         </div>
         {job.status === "running" && (
           <button
@@ -54,10 +54,20 @@ export function JobCard({ job, onCancel, onReveal, onCopy }: JobCardProps): JSX.
         <details className="mt-3 rounded-md bg-rose-50 p-2 text-sm text-rose-900">
           <summary className="cursor-pointer font-medium">오류 상세</summary>
           <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words text-xs">
-            {job.error}
-            {job.technicalDetails ? `\n\n${job.technicalDetails}` : ""}
+            {job.technicalDetails || job.error}
           </pre>
         </details>
+      )}
+
+      {job.status === "success" && job.resultReport && (
+        <div className="mt-3 grid grid-cols-2 gap-2 rounded-md border border-emerald-100 bg-emerald-50 p-2 text-xs text-emerald-950">
+          <ReportItem label="검증" value={job.resultReport.validationPassed ? "완료" : "실패"} />
+          <ReportItem label="결과 파일" value={`${job.resultReport.outputCount}개`} />
+          <ReportItem label="원본 용량" value={formatBytes(job.resultReport.inputBytes)} />
+          <ReportItem label="결과 용량" value={formatBytes(job.resultReport.outputBytes)} />
+          <ReportItem label="용량 차이" value={formatByteDelta(job.resultReport.byteDelta, job.resultReport.byteDeltaPercent)} />
+          <ReportItem label="소요 시간" value={formatDurationMs(job.resultReport.durationMs)} />
+        </div>
       )}
 
       {job.outputPaths.length > 0 && (
@@ -86,6 +96,32 @@ export function JobCard({ job, onCancel, onReveal, onCopy }: JobCardProps): JSX.
       )}
     </article>
   );
+}
+
+function ReportItem({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] font-medium text-emerald-700">{label}</p>
+      <p className="truncate font-semibold text-emerald-950">{value}</p>
+    </div>
+  );
+}
+
+function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "-";
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}초`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}분 ${rest}초`;
+}
+
+function formatByteDelta(byteDelta: number, percent: number): string {
+  if (!Number.isFinite(byteDelta) || byteDelta === 0) return "변화 없음";
+  const label = byteDelta > 0 ? "절감" : "증가";
+  const formattedPercent = Number.isFinite(percent) ? ` (${Math.abs(percent).toFixed(1)}%)` : "";
+  return `${label} ${formatBytes(Math.abs(byteDelta))}${formattedPercent}`;
 }
 
 function StatusIcon({ status }: { status: ConversionJob["status"] }): JSX.Element {

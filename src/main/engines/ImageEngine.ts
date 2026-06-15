@@ -34,6 +34,47 @@ export class ImageEngine {
     onProgress(90, "WEBP 파일을 저장했습니다.");
   }
 
+  async optimizeJpg(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    onProgress(20, "JPG 이미지를 최적화하는 중입니다.");
+    await sharp(inputPath)
+      .rotate()
+      .jpeg({ quality, mozjpeg: true })
+      .toFile(outputPath);
+    onProgress(90, "최적화된 JPG 파일을 저장했습니다.");
+  }
+
+  async optimizePng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    onProgress(20, "PNG 이미지를 최적화하는 중입니다.");
+    await sharp(inputPath)
+      .rotate()
+      .png({ compressionLevel: 9, adaptiveFiltering: true })
+      .toFile(outputPath);
+    onProgress(90, "최적화된 PNG 파일을 저장했습니다.");
+  }
+
+  async optimizeWebp(
+    inputPath: string,
+    outputPath: string,
+    quality: number,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    onProgress(20, "WEBP 이미지를 최적화하는 중입니다.");
+    await sharp(inputPath)
+      .rotate()
+      .webp({ quality, effort: 6 })
+      .toFile(outputPath);
+    onProgress(90, "최적화된 WEBP 파일을 저장했습니다.");
+  }
+
   async webpToJpg(
     inputPath: string,
     outputPath: string,

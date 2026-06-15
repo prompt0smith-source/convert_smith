@@ -6,6 +6,7 @@ import sharp from "sharp";
 import type {
   ConversionJob,
   ConversionOptions,
+  ConversionResultReport,
   ConversionType,
   FilePreview,
   FileItem,
@@ -293,9 +294,11 @@ export class ConversionService {
         controller.signal
       );
 
+      const validationMessages: string[] = [];
       emit({ progress: 98, message: "출력 파일을 검증하는 중입니다.", outputPaths });
       for (const outputPath of outputPaths) {
         const validation = await this.validation.validateOutput(payload.conversionType, outputPath);
+        validationMessages.push(validation.message);
         if (!validation.ok) {
           throw new Error(`${validation.message}\n${validation.technicalDetails || ""}`.trim());
         }
@@ -306,11 +309,13 @@ export class ConversionService {
         progress: 100,
         message: "변환과 검증이 완료되었습니다.",
         outputPaths,
+        resultReport: await this.buildResultReport(sourcePaths, outputPaths, job.createdAt, true, validationMessages),
         completedAt: Date.now()
       });
     } catch (error) {
       const isCancelled = controller.signal.aborted;
       const cleanedCount = await this.cleanupCreatedOutputs(createdOutputPaths, sourcePaths);
+      const userError = this.toUserError(error);
       emit({
         status: isCancelled ? "cancelled" : "failed",
         progress: isCancelled ? job.progress : Math.max(job.progress, 1),
@@ -318,8 +323,9 @@ export class ConversionService {
           ? "변환이 취소되었습니다."
           : `파일을 변환하지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.${cleanedCount > 0 ? " 불완전한 출력 파일은 자동 정리했습니다." : ""}`,
         outputPaths: [],
-        error: this.toUserError(error),
+        error: userError,
         technicalDetails: error instanceof Error ? error.stack || error.message : String(error),
+        resultReport: await this.buildResultReport(sourcePaths, [], job.createdAt, false, [userError]),
         completedAt: Date.now()
       });
     } finally {
@@ -408,6 +414,41 @@ export class ConversionService {
     return cleanedCount;
   }
 
+  private async buildResultReport(
+    sourcePaths: string[],
+    outputPaths: string[],
+    startedAt: number,
+    validationPassed: boolean,
+    validationMessages: string[]
+  ): Promise<ConversionResultReport> {
+    const inputBytes = await this.sumFileSizes(sourcePaths);
+    const outputBytes = await this.sumFileSizes(outputPaths);
+    const byteDelta = inputBytes - outputBytes;
+    return {
+      sourceCount: sourcePaths.length,
+      outputCount: outputPaths.length,
+      inputBytes,
+      outputBytes,
+      byteDelta,
+      byteDeltaPercent: inputBytes > 0 ? (byteDelta / inputBytes) * 100 : 0,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      validationPassed,
+      validationMessages
+    };
+  }
+
+  private async sumFileSizes(filePaths: string[]): Promise<number> {
+    let total = 0;
+    for (const filePath of filePaths) {
+      try {
+        total += (await stat(filePath)).size;
+      } catch {
+        // Missing files should not prevent reporting the original result.
+      }
+    }
+    return total;
+  }
+
   private detectKind(extension: string): FileKind {
     if (extension === ".pdf") return "pdf";
     if ([".doc", ".docx"].includes(extension)) return "word";
@@ -421,12 +462,40 @@ export class ConversionService {
 
   private toUserError(error: unknown): string {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("LibreOffice")) return "LibreOffice를 찾을 수 없어 PDF 변환을 진행할 수 없습니다.";
-    if (message.includes("오디오 트랙") || message.toLowerCase().includes("audio")) {
+    const lower = message.toLowerCase();
+    if (message.includes("LibreOffice") || lower.includes("soffice")) {
+      return "LibreOffice를 찾을 수 없어 변환을 진행할 수 없습니다. 설정에서 올바른 soffice 실행 파일을 지정해주세요.";
+    }
+    if (lower.includes("eacces") || lower.includes("eperm") || message.includes("권한")) {
+      return "파일을 읽거나 저장할 권한이 없습니다. 파일이 다른 프로그램에서 열려 있거나 보호된 위치인지 확인해주세요.";
+    }
+    if (lower.includes("enoent") || message.includes("찾을 수 없")) {
+      return "파일을 찾을 수 없습니다. 원본 파일 또는 저장 폴더가 이동되었는지 확인해주세요.";
+    }
+    if (message.includes("비어") || lower.includes("empty")) {
+      return "비어 있는 파일은 변환할 수 없습니다.";
+    }
+    if (lower.includes("password") || lower.includes("encrypted") || message.includes("암호")) {
+      return "암호화되었거나 비밀번호가 걸린 PDF는 변환할 수 없습니다. 잠금을 해제한 뒤 다시 시도해주세요.";
+    }
+    if (
+      lower.includes("invalid pdf") ||
+      lower.includes("bad xref") ||
+      lower.includes("xref") ||
+      lower.includes("pdf header") ||
+      lower.includes("parse") ||
+      message.includes("PDF 페이지 영역")
+    ) {
+      return "PDF 구조를 읽지 못했습니다. 파일이 손상되었거나 표준 PDF 구조가 아닐 수 있습니다.";
+    }
+    if (message.includes("오디오 트랙") || lower.includes("audio track") || lower.includes("no audio")) {
       return "동영상에 오디오 트랙이 없어 MP3를 만들 수 없습니다.";
     }
+    if (lower.includes("unsupported codec") || lower.includes("ffprobe") || lower.includes("ffmpeg") || lower.includes("invalid data")) {
+      return "미디어 파일을 읽지 못했습니다. 지원하지 않는 코덱이거나 파일이 손상되었을 수 있습니다.";
+    }
     if (message.includes("HEIC")) return "HEIC 파일을 읽지 못했습니다. 다른 HEIC 변환 엔진으로 다시 시도해주세요.";
-    if (message.includes("검증") || message.toLowerCase().includes("validation")) {
+    if (message.includes("검증") || lower.includes("validation")) {
       return "출력 파일 검증에 실패했습니다. 파일이 정상적으로 열리지 않을 수 있습니다.";
     }
     if (message.includes("취소")) return "변환이 취소되었습니다.";

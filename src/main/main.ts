@@ -5,10 +5,12 @@ import { registerFloatingHandlers } from "./ipc/floatingHandlers.js";
 import { registerPdfToolHandlers } from "./ipc/pdfToolHandlers.js";
 import { ConversionService } from "./services/ConversionService.js";
 import { FloatingWindowService } from "./services/FloatingWindowService.js";
+import { PathAccessRegistry } from "./services/PathAccessRegistry.js";
 import { PdfToolService } from "./services/PdfToolService.js";
 
 const conversionService = new ConversionService();
 const pdfToolService = new PdfToolService();
+const pathAccessRegistry = new PathAccessRegistry();
 let floatingService: FloatingWindowService | undefined;
 
 function getAppIconPath(): string {
@@ -64,8 +66,8 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
-  registerConversionHandlers(conversionService);
-  registerPdfToolHandlers(pdfToolService);
+  registerConversionHandlers(conversionService, pathAccessRegistry);
+  registerPdfToolHandlers(pdfToolService, pathAccessRegistry);
   createWindow();
 
   app.on("activate", () => {

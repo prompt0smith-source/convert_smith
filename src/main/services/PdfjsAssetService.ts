@@ -24,6 +24,7 @@ export function createPdfjsDocumentOptions(data: Uint8Array): Record<string, unk
   return {
     data,
     disableWorker: true,
+    isEvalSupported: false,
     useSystemFonts: true,
     disableFontFace: false,
     standardFontDataUrl: path.join(root, "standard_fonts") + path.sep,

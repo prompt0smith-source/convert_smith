@@ -81,6 +81,19 @@ interface PreflightNoticeItem {
   message: string;
 }
 
+interface QuickConversionPreset {
+  label: string;
+  preferredTypes: ConversionType[];
+}
+
+const QUICK_CONVERSION_PRESETS: QuickConversionPreset[] = [
+  { label: "문서를 PDF로", preferredTypes: ["docx_to_pdf", "xlsx_to_pdf", "pptx_to_pdf"] },
+  { label: "이미지를 PDF로", preferredTypes: ["images_to_pdf"] },
+  { label: "PDF를 이미지로", preferredTypes: ["pdf_to_images"] },
+  { label: "동영상을 호환 MP4로", preferredTypes: ["video_compatibility_repair", "mov_to_mp4", "webm_to_mp4", "mkv_to_mp4"] },
+  { label: "이미지를 가볍게", preferredTypes: ["jpg_optimize", "png_optimize", "webp_optimize", "image_to_webp"] }
+];
+
 const LIBRE_OFFICE_CONVERSIONS = new Set<ConversionType>([
   "docx_to_pdf",
   "xlsx_to_pdf",
@@ -455,6 +468,41 @@ export function App(): JSX.Element {
       modeTimerRefs.current.push(swapTimer);
     },
     [modeAnimation, workMode]
+  );
+
+  const applyQuickPreset = useCallback(
+    (preset: QuickConversionPreset) => {
+      const sorted = sortFiles(files, sortMode);
+      if (sorted.length === 0) {
+        setNotice("프리셋을 적용하려면 파일을 먼저 추가해주세요.");
+        return;
+      }
+
+      const commonPresetType = preset.preferredTypes.find((type) => getCommonConversions(sorted).includes(type));
+      changeWorkMode("convert");
+
+      if (commonPresetType) {
+        setConvertMode("batch");
+        setBatchConversionType(commonPresetType);
+        setNotice(`${preset.label} 프리셋을 적용했습니다.`);
+        return;
+      }
+
+      const nextTargets: Record<string, ConversionType> = {};
+      for (const item of sorted) {
+        const target = preset.preferredTypes.find((type) => item.supportedConversions.includes(type));
+        if (!target) {
+          setNotice(`${preset.label} 프리셋을 현재 파일 전체에 적용할 수 없습니다.`);
+          return;
+        }
+        nextTargets[item.id] = target;
+      }
+
+      setConvertMode("individual");
+      setIndividualTargets((current) => ({ ...current, ...nextTargets }));
+      setNotice(`${preset.label} 프리셋을 파일별로 적용했습니다.`);
+    },
+    [changeWorkMode, files, sortMode]
   );
 
   const reorderFiles = useCallback((orderedIds: string[]) => {
@@ -975,6 +1023,8 @@ export function App(): JSX.Element {
         >
           {displayedWorkMode === "convert" ? (
             <section className="h-full min-h-0 overflow-auto border-r border-stone-200 bg-white">
+              <QuickPresetPanel presets={QUICK_CONVERSION_PRESETS} onApplyPreset={applyQuickPreset} />
+
               <ConversionTypeSelector
                 files={files}
                 displayFiles={displayFiles}
@@ -1248,6 +1298,36 @@ function WaterDropLoader(): JSX.Element {
       </div>
       <span className="smith-sr-only">Loading</span>
     </div>
+  );
+}
+
+function QuickPresetPanel({
+  presets,
+  onApplyPreset
+}: {
+  presets: QuickConversionPreset[];
+  onApplyPreset: (preset: QuickConversionPreset) => void;
+}): JSX.Element {
+  return (
+    <section className="border-b border-stone-200 bg-stone-50 p-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-stone-900">빠른 선택</h2>
+        <span className="text-xs text-stone-500">파일에 맞는 변환을 자동 선택합니다.</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {presets.map((preset) => (
+          <button
+            key={preset.label}
+            type="button"
+            onClick={() => onApplyPreset(preset)}
+            className="inline-flex h-8 max-w-full items-center justify-center truncate rounded-md border border-stone-200 bg-white px-2.5 text-xs font-semibold text-stone-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 active:scale-[0.97]"
+            title={preset.label}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
