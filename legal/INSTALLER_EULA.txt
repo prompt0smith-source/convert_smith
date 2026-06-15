@@ -1,0 +1,85 @@
+Convert Smith End User Terms and Disclaimer
+Copyright (C) 2026 JINKYU YOO
+
+This notice applies to the Convert Smith desktop application and installer
+package. By installing or using Convert Smith, you agree to these terms.
+
+1. Copyright and Distribution
+
+The Convert Smith name, application UI, original source code, original text,
+icon arrangement, installer package, and related application resources are
+owned by JINKYU YOO unless otherwise stated.
+
+You may not copy, redistribute, resell, repackage, modify and distribute,
+publicly post, or provide the Convert Smith installer, application package,
+original code, UI resources, or substantial parts of them to a third party
+without written permission from the owner. Unauthorized distribution and
+unauthorized copying are not permitted.
+
+This section does not restrict rights granted to users by the licenses of
+open source components included with or used by Convert Smith.
+
+2. Local Conversion and User Responsibility
+
+Convert Smith runs file conversions locally on the user's computer and does
+not upload files to a cloud conversion service. The user is responsible for
+choosing source files, choosing output locations, reviewing converted files,
+and deciding whether the output is suitable for use.
+
+Important files should be backed up before conversion. Convert Smith is
+designed not to overwrite original files, but the user remains responsible
+for storage location management, file retention, and result review.
+
+3. Disclaimer
+
+Convert Smith assists with file format conversion, PDF/document processing,
+image conversion, media codec conversion, and compatibility repair. It does
+not guarantee that every file will convert successfully, that damaged files
+can be fully repaired, that PDF/Word layouts will be preserved perfectly, or
+that every output file will be suitable for every purpose.
+
+Files may fail to convert or may produce different output quality when they
+are damaged, encrypted, DRM-protected, non-standard, missing fonts, dependent
+on unavailable codecs, or affected by external conversion engine limits or
+operating system differences.
+
+To the maximum extent permitted by law, the developer is not liable for data
+loss, file damage, work delay, lost profits, indirect damages, special
+damages, consequential damages, or third-party disputes arising from use or
+inability to use Convert Smith.
+
+4. Prohibited Use
+
+You may not use Convert Smith in a way that infringes another party's
+copyright, privacy, trade secret, security policy, contractual rights, or
+applicable law. Use for unauthorized DRM circumvention, illegal copying, or
+malicious file creation or distribution is not permitted.
+
+5. Open Source and Third-Party Components
+
+Convert Smith may include or use third-party open source components such as
+FFmpeg, FFprobe, Electron, React, Sharp, pdf-lib, and pdfjs-dist. Those
+components are governed by their own licenses.
+
+Nothing in this notice limits or invalidates rights granted by the licenses
+of FFmpeg, FFprobe, or any other open source component. If this notice
+conflicts with an open source license for a component, the open source license
+controls for that component.
+
+Third-party license texts, notices, and source-code offer information are
+included in the installed THIRD_PARTY_NOTICES.md file and the legal folder.
+
+6. LibreOffice and External Programs
+
+LibreOffice is not bundled by default with Convert Smith. Office document
+conversion features may use a LibreOffice soffice executable installed or
+specified by the user. LibreOffice is governed by the LibreOffice project's
+own licenses and policies.
+
+7. Trademarks
+
+FFmpeg, LibreOffice, Electron, React, and other third-party project names and
+trademarks belong to their respective owners. Unless separately stated,
+Convert Smith is not affiliated with or endorsed by those projects.
+
+The full Korean in-app terms are displayed when Convert Smith is first run.

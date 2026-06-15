@@ -1,15 +1,18 @@
 import {
   FileArchive,
   FileAudio,
+  FileCheck2,
   FileImage,
   FileSpreadsheet,
   FileText,
   FileVideo,
   FolderOpen,
   GripVertical,
+  ListRestart,
+  Settings2,
   Trash2
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import type { FileItem, FileKind, SortMode } from "../../main/types/conversion";
 import { formatBytes } from "../lib/formatLabels";
@@ -20,8 +23,16 @@ interface DropZoneProps {
   sortMode: SortMode;
   selectedFileId?: string;
   isDragging: boolean;
+  clearFilesAfterSuccess: boolean;
+  openFolderAfterSuccess: boolean;
+  openFileAfterSuccess: boolean;
+  outputName: string;
   onPickFiles: () => void;
   onSortModeChange: (mode: SortMode) => void;
+  onClearFilesAfterSuccessChange: (value: boolean) => void;
+  onOpenFolderAfterSuccessChange: (value: boolean) => void;
+  onOpenFileAfterSuccessChange: (value: boolean) => void;
+  onOutputNameChange: (value: string) => void;
   onSelectFile: (item: FileItem) => void;
   onRemoveFile: (id: string) => void;
   onReorderFiles: (orderedIds: string[]) => void;
@@ -44,14 +55,27 @@ export function DropZone({
   sortMode,
   selectedFileId,
   isDragging,
+  clearFilesAfterSuccess,
+  openFolderAfterSuccess,
+  openFileAfterSuccess,
+  outputName,
   onPickFiles,
   onSortModeChange,
+  onClearFilesAfterSuccessChange,
+  onOpenFolderAfterSuccessChange,
+  onOpenFileAfterSuccessChange,
+  onOutputNameChange,
   onSelectFile,
   onRemoveFile,
   onReorderFiles
 }: DropZoneProps): JSX.Element {
   const [draggedId, setDraggedId] = useState<string>();
   const [insertionIndex, setInsertionIndex] = useState<number | null>(null);
+  const [isCompletionOptionsOpen, setIsCompletionOptionsOpen] = useState(false);
+  const [isCompletionOptionsRendered, setIsCompletionOptionsRendered] = useState(false);
+  const [isCompletionOptionsClosing, setIsCompletionOptionsClosing] = useState(false);
+  const completionOptionsRef = useRef<HTMLDivElement>(null);
+  const completionOptionsTimerRef = useRef<number>();
 
   const draggedItem = draggedId ? displayFiles.find((item) => item.id === draggedId) : undefined;
   const visibleFiles = draggedItem ? displayFiles.filter((item) => item.id !== draggedItem.id) : displayFiles;
@@ -123,6 +147,61 @@ export function DropZone({
     setInsertionIndex(null);
   };
 
+  const openCompletionOptions = () => {
+    if (completionOptionsTimerRef.current) {
+      window.clearTimeout(completionOptionsTimerRef.current);
+    }
+    setIsCompletionOptionsRendered(true);
+    setIsCompletionOptionsClosing(false);
+    setIsCompletionOptionsOpen(true);
+  };
+
+  const closeCompletionOptions = () => {
+    if (!isCompletionOptionsRendered) return;
+    if (completionOptionsTimerRef.current) {
+      window.clearTimeout(completionOptionsTimerRef.current);
+    }
+    setIsCompletionOptionsOpen(false);
+    setIsCompletionOptionsClosing(true);
+    completionOptionsTimerRef.current = window.setTimeout(() => {
+      setIsCompletionOptionsRendered(false);
+      setIsCompletionOptionsClosing(false);
+    }, 220);
+  };
+
+  const toggleCompletionOptions = () => {
+    if (isCompletionOptionsOpen) closeCompletionOptions();
+    else openCompletionOptions();
+  };
+
+  useEffect(() => {
+    if (!isCompletionOptionsRendered || isCompletionOptionsClosing) return undefined;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCompletionOptions();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && completionOptionsRef.current?.contains(target)) return;
+      closeCompletionOptions();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [isCompletionOptionsClosing, isCompletionOptionsRendered]);
+
+  useEffect(() => {
+    return () => {
+      if (completionOptionsTimerRef.current) {
+        window.clearTimeout(completionOptionsTimerRef.current);
+      }
+    };
+  }, []);
+
   return (
     <section className="flex min-h-0 flex-1 flex-col border-r border-stone-200 bg-stone-50">
       <div
@@ -152,6 +231,59 @@ export function DropZone({
       <div className="flex items-center justify-between gap-3 px-4 pb-3">
         <span className="shrink-0 text-sm font-medium text-stone-700">{files.length}개 파일</span>
         <div className="flex min-w-0 items-center gap-2">
+          <div className="relative" ref={completionOptionsRef}>
+            <button
+              type="button"
+              onClick={toggleCompletionOptions}
+              aria-label="완료 후 처리 옵션"
+              aria-expanded={isCompletionOptionsOpen}
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-stone-300 bg-stone-200 text-stone-800 shadow-sm transition hover:bg-stone-300"
+            >
+              <Settings2
+                size={15}
+                className={["transition-transform duration-300", isCompletionOptionsOpen ? "rotate-90" : "rotate-0"].join(" ")}
+              />
+            </button>
+
+            {isCompletionOptionsRendered && (
+              <div
+                className={[
+                  "completion-options-popover absolute right-0 top-10 z-30 w-[292px] max-w-[calc(100vw-24px)] rounded-md border border-stone-200 bg-white p-3 text-stone-900 shadow-xl",
+                  isCompletionOptionsClosing
+                    ? "completion-options-popover--closing"
+                    : "completion-options-popover--open"
+                ].join(" ")}
+              >
+                <div className="mb-3">
+                  <h3 className="text-sm font-semibold text-stone-900">완료 후 처리</h3>
+                  <p className="mt-1 text-xs leading-5 text-stone-500">
+                    변환이 끝난 뒤 자동으로 실행할 동작을 선택합니다.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <CompletionOption
+                    icon={<ListRestart size={15} />}
+                    label="완료 후 목록 초기화"
+                    checked={clearFilesAfterSuccess}
+                    onChange={onClearFilesAfterSuccessChange}
+                  />
+                  <CompletionOption
+                    icon={<FolderOpen size={15} />}
+                    label="완료 후 결과 위치 열기"
+                    checked={openFolderAfterSuccess}
+                    onChange={onOpenFolderAfterSuccessChange}
+                  />
+                  <CompletionOption
+                    icon={<FileCheck2 size={15} />}
+                    label="완료 후 첫 결과 파일 열기"
+                    checked={openFileAfterSuccess}
+                    onChange={onOpenFileAfterSuccessChange}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
           <select
             value={sortMode}
             onChange={(event) => onSortModeChange(event.target.value as SortMode)}
@@ -193,7 +325,47 @@ export function DropZone({
           </div>
         )}
       </div>
+
+      <div className="shrink-0 border-t border-stone-200 bg-white px-4 py-3">
+        <label className="block min-w-0 text-sm font-semibold text-stone-900">
+          결과 파일명
+          <input
+            value={outputName}
+            onChange={(event) => onOutputNameChange(event.target.value)}
+            placeholder="비워두면 자동 이름"
+            className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-stone-50 px-3 text-sm font-normal text-stone-800 outline-none transition placeholder:text-stone-400 focus:border-emerald-500 focus:bg-white focus:ring-2 focus:ring-emerald-100"
+          />
+        </label>
+        <p className="mt-1 truncate text-xs text-stone-500">확장자는 변환 형식에 맞춰 자동으로 붙습니다.</p>
+      </div>
     </section>
+  );
+}
+
+function CompletionOption({
+  icon,
+  label,
+  checked,
+  onChange
+}: {
+  icon: JSX.Element;
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}): JSX.Element {
+  return (
+    <label className="flex h-10 min-w-0 items-center justify-between gap-3 rounded-md bg-stone-50 px-3 text-sm text-stone-800 transition hover:bg-stone-100">
+      <span className="inline-flex min-w-0 items-center gap-2">
+        <span className="shrink-0 text-stone-700">{icon}</span>
+        <span className="truncate">{label}</span>
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-4 w-4 shrink-0 accent-emerald-700"
+      />
+    </label>
   );
 }
 

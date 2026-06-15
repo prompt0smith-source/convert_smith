@@ -1,5 +1,5 @@
 import { Settings, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ConversionJob, DependencyStatus } from "../../main/types/conversion";
 import { ConversionResultPanel } from "./ConversionResultPanel";
 import { DependencyStatusPanel } from "./DependencyStatusPanel";
@@ -13,9 +13,6 @@ interface UtilityDrawerProps {
   libreOfficePath?: string;
   darkMode: boolean;
   floatingEnabled: boolean;
-  clearFilesAfterSuccess: boolean;
-  openFolderAfterSuccess: boolean;
-  openFileAfterSuccess: boolean;
   onToggle: () => void;
   onClose: () => void;
   onRefreshDependencies: () => void;
@@ -23,9 +20,6 @@ interface UtilityDrawerProps {
   onOpenLibreOfficeDownload: () => void;
   onDarkModeChange: (value: boolean) => void;
   onFloatingEnabledChange: (value: boolean) => void;
-  onClearFilesAfterSuccessChange: (value: boolean) => void;
-  onOpenFolderAfterSuccessChange: (value: boolean) => void;
-  onOpenFileAfterSuccessChange: (value: boolean) => void;
   onCancelJob: (jobId: string) => void;
   onReveal: (path: string) => void;
   onCopy: (path: string) => void;
@@ -38,9 +32,6 @@ export function UtilityDrawer({
   libreOfficePath,
   darkMode,
   floatingEnabled,
-  clearFilesAfterSuccess,
-  openFolderAfterSuccess,
-  openFileAfterSuccess,
   onToggle,
   onClose,
   onRefreshDependencies,
@@ -48,21 +39,47 @@ export function UtilityDrawer({
   onOpenLibreOfficeDownload,
   onDarkModeChange,
   onFloatingEnabledChange,
-  onClearFilesAfterSuccessChange,
-  onOpenFolderAfterSuccessChange,
-  onOpenFileAfterSuccessChange,
   onCancelJob,
   onReveal,
   onCopy
 }: UtilityDrawerProps): JSX.Element {
+  const [shouldRender, setShouldRender] = useState(isOpen);
+  const [isClosing, setIsClosing] = useState(false);
+  const closeTimerRef = useRef<number>();
+
   useEffect(() => {
-    if (!isOpen) return undefined;
+    if (closeTimerRef.current) {
+      window.clearTimeout(closeTimerRef.current);
+    }
+
+    if (isOpen) {
+      setShouldRender(true);
+      setIsClosing(false);
+      return undefined;
+    }
+
+    if (!shouldRender) return undefined;
+    setIsClosing(true);
+    closeTimerRef.current = window.setTimeout(() => {
+      setShouldRender(false);
+      setIsClosing(false);
+    }, 260);
+
+    return () => {
+      if (closeTimerRef.current) {
+        window.clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, [isOpen, shouldRender]);
+
+  useEffect(() => {
+    if (!shouldRender || isClosing) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isOpen, onClose]);
+  }, [isClosing, onClose, shouldRender]);
 
   return (
     <>
@@ -70,6 +87,7 @@ export function UtilityDrawer({
         type="button"
         onClick={onToggle}
         aria-label="옵션 패널"
+        aria-expanded={isOpen}
         className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-stone-300 bg-stone-200 text-stone-800 shadow-sm hover:bg-stone-300"
       >
         <Settings
@@ -78,10 +96,19 @@ export function UtilityDrawer({
         />
       </button>
 
-      {isOpen && (
-        <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose}>
+      {shouldRender && (
+        <div
+          className={[
+            "utility-drawer-overlay fixed inset-0 z-40 bg-black/20",
+            isClosing ? "utility-drawer-overlay--closing" : "utility-drawer-overlay--open"
+          ].join(" ")}
+          onClick={onClose}
+        >
           <aside
-            className="absolute right-0 top-0 flex h-full w-[440px] max-w-[calc(100vw-40px)] flex-col border-l border-zinc-700 bg-zinc-950 text-zinc-100 shadow-2xl"
+            className={[
+              "utility-drawer-panel absolute right-0 top-0 flex h-full w-[440px] max-w-[calc(100vw-24px)] flex-col border-l border-zinc-700 bg-zinc-950 text-zinc-100 shadow-2xl",
+              isClosing ? "utility-drawer-panel--closing" : "utility-drawer-panel--open"
+            ].join(" ")}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
@@ -105,16 +132,10 @@ export function UtilityDrawer({
                 libreOfficePath={libreOfficePath}
                 darkMode={darkMode}
                 floatingEnabled={floatingEnabled}
-                clearFilesAfterSuccess={clearFilesAfterSuccess}
-                openFolderAfterSuccess={openFolderAfterSuccess}
-                openFileAfterSuccess={openFileAfterSuccess}
                 onPickLibreOfficePath={onPickLibreOfficePath}
                 onOpenLibreOfficeDownload={onOpenLibreOfficeDownload}
                 onDarkModeChange={onDarkModeChange}
                 onFloatingEnabledChange={onFloatingEnabledChange}
-                onClearFilesAfterSuccessChange={onClearFilesAfterSuccessChange}
-                onOpenFolderAfterSuccessChange={onOpenFolderAfterSuccessChange}
-                onOpenFileAfterSuccessChange={onOpenFileAfterSuccessChange}
               />
               <JobQueue jobs={jobs} onCancel={onCancelJob} onReveal={onReveal} onCopy={onCopy} />
               <ConversionResultPanel jobs={jobs} onReveal={onReveal} />

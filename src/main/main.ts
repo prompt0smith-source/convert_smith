@@ -25,8 +25,8 @@ function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 1040,
-    minHeight: 700,
+    minWidth: 760,
+    minHeight: 620,
     title: "Convert Smith",
     icon: iconPath,
     backgroundColor: "#0f172a",

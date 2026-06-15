@@ -1,0 +1,46 @@
+FFmpeg / FFprobe Source Code Offer and Build Notice
+
+Convert Smith includes FFmpeg and FFprobe binaries through npm packages:
+
+- ffmpeg-static
+- ffprobe-static
+
+The bundled Windows FFmpeg binary currently installed in this project reports:
+
+- FFmpeg 64-bit static Windows build from www.gyan.dev
+- Version: 6.1.1-essentials_build-www.gyan.dev
+- License: GPL v3
+- Source Code reference: https://github.com/FFmpeg/FFmpeg/commit/e38092ef93
+
+The exact FFmpeg build configuration and bundled binary license text are
+included with this application at:
+
+- legal/licenses/ffmpeg-static/ffmpeg.exe.README
+- legal/licenses/ffmpeg-static/ffmpeg.exe.LICENSE
+- legal/licenses/ffmpeg-static/LICENSE
+
+The ffprobe-static package license text is included at:
+
+- legal/licenses/ffprobe-static/LICENSE
+- legal/licenses/ffprobe-static/README.md
+
+If you distribute a Convert Smith installer or portable package, you must keep
+these files with the distribution. If you do not provide a complete
+corresponding source archive next to the binary release, this file should be
+treated as a written source-code offer for the FFmpeg/FFprobe binaries included
+with that release.
+
+Before publishing a public release, the distributor should either:
+
+1. provide equivalent access to the corresponding source archive from the same
+   download page as the Convert Smith binary release, or
+2. provide a valid written offer, for the period required by the applicable
+   license, explaining how recipients can obtain the corresponding source.
+
+This source-code offer applies only to the third-party FFmpeg/FFprobe binaries
+and related GPL/LGPL-covered components included with the Convert Smith
+distribution. It does not change the licenses of Convert Smith's own source
+files or any other third-party packages.
+
+This notice is provided for open source license compliance and is not legal
+advice.

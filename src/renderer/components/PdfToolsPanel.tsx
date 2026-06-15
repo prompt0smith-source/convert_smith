@@ -1,4 +1,4 @@
-import { Copy, ExternalLink, FolderOpen, GripVertical, Layers, Scissors, Shuffle, Trash2 } from "lucide-react";
+import { Copy, ExternalLink, FolderOpen, GripVertical, Layers, Plus, Scissors, Shuffle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { DragEvent } from "react";
 import type {
@@ -19,7 +19,6 @@ interface PdfToolsPanelProps {
   useSourceFolder: boolean;
   useDatedSubfolder: boolean;
   toolType: PdfToolType;
-  outputName: string;
   selectedPage: number;
   pageOrder: number[];
   pageRotations: Record<number, PdfRotation>;
@@ -27,7 +26,6 @@ interface PdfToolsPanelProps {
   pdfToolJobs: PdfToolJob[];
   onSelectFile: (item: FileItem) => void;
   onToolTypeChange: (type: PdfToolType) => void;
-  onOutputNameChange: (value: string) => void;
   onPagePreviewChange: (page: number) => void;
   onPageOrderChange: (pages: number[]) => void;
   onPageRotationsChange: (rotations: Record<number, PdfRotation>) => void;
@@ -50,6 +48,22 @@ const TOOL_TYPES: PdfToolType[] = [
 
 const INTERNAL_PAGE_DRAG_TYPE = "application/x-convert-smith-page";
 
+function createSplitGroup(index: number): PdfSplitGroup {
+  return {
+    id: `group-${Date.now()}-${index}`,
+    name: `group ${index}`,
+    pages: []
+  };
+}
+
+function getNextSplitGroupIndex(groups: PdfSplitGroup[]): number {
+  const largestNamedIndex = groups.reduce((largest, group) => {
+    const match = group.name.match(/^group\s+(\d+)$/i);
+    return Math.max(largest, match ? Number(match[1]) : 0);
+  }, 0);
+  return Math.max(groups.length, largestNamedIndex) + 1;
+}
+
 export function PdfToolsPanel({
   displayFiles,
   selectedFile,
@@ -58,7 +72,6 @@ export function PdfToolsPanel({
   useSourceFolder,
   useDatedSubfolder,
   toolType,
-  outputName,
   selectedPage,
   pageOrder,
   pageRotations,
@@ -66,7 +79,6 @@ export function PdfToolsPanel({
   pdfToolJobs,
   onSelectFile,
   onToolTypeChange,
-  onOutputNameChange,
   onPagePreviewChange,
   onPageOrderChange,
   onPageRotationsChange,
@@ -82,17 +94,17 @@ export function PdfToolsPanel({
   const pdfFiles = useMemo(() => displayFiles.filter((file) => file.extension === ".pdf"), [displayFiles]);
   const selectedPdf = selectedFile?.extension === ".pdf" ? selectedFile : pdfFiles[0];
   const [info, setInfo] = useState<PdfDocumentInfo>();
-  const [selectedPages, setSelectedPages] = useState<number[]>([]);
-  const [groupName, setGroupName] = useState("");
   const [dragPage, setDragPage] = useState<number | null>(null);
   const [dropTargetPage, setDropTargetPage] = useState<number | null>(null);
+  const [splitDragPage, setSplitDragPage] = useState<number | null>(null);
+  const [splitDropGroupId, setSplitDropGroupId] = useState<string | null>(null);
+  const [isSplitPageReturnActive, setIsSplitPageReturnActive] = useState(false);
   const effectiveOutputDir = useSourceFolder ? sourceOutputDir : outputDir;
   const latestJob = pdfToolJobs[0];
 
   useEffect(() => {
     let cancelled = false;
     setInfo(undefined);
-    setSelectedPages([]);
     if (!selectedPdf) return undefined;
 
     window.convertSmith
@@ -116,6 +128,26 @@ export function PdfToolsPanel({
   }, [selectedPdf?.path]);
 
   const activeOrder = pageOrder.length ? pageOrder : Array.from({ length: info?.pageCount || 0 }, (_, index) => index + 1);
+  const activeSplitGroups = useMemo(
+    () => (splitGroups.length > 0 ? splitGroups : [createSplitGroup(1)]),
+    [splitGroups]
+  );
+  const pageAssignment = useMemo(() => {
+    const assignments = new Map<number, string>();
+    activeSplitGroups.forEach((group) => {
+      group.pages.forEach((page) => assignments.set(page, group.name));
+    });
+    return assignments;
+  }, [activeSplitGroups]);
+  const availableSplitPages = useMemo(
+    () => activeOrder.filter((page) => !pageAssignment.has(page)),
+    [activeOrder, pageAssignment]
+  );
+
+  useEffect(() => {
+    if (toolType !== "pdf_split_groups" || !selectedPdf || splitGroups.length > 0) return;
+    onSplitGroupsChange([createSplitGroup(1)]);
+  }, [onSplitGroupsChange, selectedPdf?.path, splitGroups.length, toolType]);
 
   const movePage = (page: number, targetPage: number) => {
     if (page === targetPage) return;
@@ -127,32 +159,38 @@ export function PdfToolsPanel({
 
   const reversePages = () => onPageOrderChange([...activeOrder].reverse());
 
-  const toggleSelectedPage = (page: number) => {
-    setSelectedPages((current) =>
-      current.includes(page) ? current.filter((item) => item !== page) : [...current, page].sort((a, b) => a - b)
-    );
-  };
-
   const addGroup = () => {
-    if (selectedPages.length === 0) {
-      onNotice("그룹에 넣을 페이지를 먼저 선택해주세요.");
-      return;
-    }
-    const nextIndex = splitGroups.length + 1;
-    onSplitGroupsChange([
-      ...splitGroups,
-      {
-        id: `group-${Date.now()}-${nextIndex}`,
-        name: groupName.trim() || `group_${nextIndex}`,
-        pages: selectedPages
-      }
-    ]);
-    setGroupName("");
-    setSelectedPages([]);
+    onSplitGroupsChange([...activeSplitGroups, createSplitGroup(getNextSplitGroupIndex(activeSplitGroups))]);
   };
 
   const removeGroup = (id: string) => {
-    onSplitGroupsChange(splitGroups.filter((group) => group.id !== id));
+    const nextGroups = activeSplitGroups.filter((group) => group.id !== id);
+    onSplitGroupsChange(nextGroups.length > 0 ? nextGroups : [createSplitGroup(1)]);
+  };
+
+  const assignPageToGroup = (page: number, groupId: string) => {
+    const nextGroups = activeSplitGroups.map((group) => ({
+      ...group,
+      pages:
+        group.id === groupId
+          ? sortPagesForActiveOrder([...group.pages.filter((item) => item !== page), page])
+          : group.pages.filter((item) => item !== page)
+    }));
+    onSplitGroupsChange(nextGroups);
+  };
+
+  const removePageFromGroups = (page: number) => {
+    onSplitGroupsChange(
+      activeSplitGroups.map((group) => ({
+        ...group,
+        pages: group.pages.filter((item) => item !== page)
+      }))
+    );
+  };
+
+  const sortPagesForActiveOrder = (pages: number[]) => {
+    const orderIndex = new Map(activeOrder.map((page, index) => [page, index]));
+    return [...new Set(pages)].sort((a, b) => (orderIndex.get(a) ?? a) - (orderIndex.get(b) ?? b));
   };
 
   const startPageDrag = (event: DragEvent, page: number) => {
@@ -179,6 +217,64 @@ export function PdfToolsPanel({
     if (sourcePage) movePage(sourcePage, page);
     setDragPage(null);
     setDropTargetPage(null);
+  };
+
+  const startSplitPageDrag = (event: DragEvent, page: number) => {
+    if (toolType !== "pdf_split_groups") return;
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(INTERNAL_PAGE_DRAG_TYPE, String(page));
+    setSplitDragPage(page);
+  };
+
+  const overSplitPageReturnDrag = (event: DragEvent) => {
+    if (toolType !== "pdf_split_groups" || !event.dataTransfer.types.includes(INTERNAL_PAGE_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    setIsSplitPageReturnActive(true);
+  };
+
+  const leaveSplitPageReturnDrag = (event: DragEvent) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setIsSplitPageReturnActive(false);
+  };
+
+  const dropSplitPageReturnDrag = (event: DragEvent) => {
+    if (toolType !== "pdf_split_groups" || !event.dataTransfer.types.includes(INTERNAL_PAGE_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sourcePage = Number(event.dataTransfer.getData(INTERNAL_PAGE_DRAG_TYPE)) || splitDragPage;
+    if (sourcePage) removePageFromGroups(sourcePage);
+    setSplitDragPage(null);
+    setSplitDropGroupId(null);
+    setIsSplitPageReturnActive(false);
+  };
+
+  const overSplitGroupDrag = (event: DragEvent, groupId: string) => {
+    if (toolType !== "pdf_split_groups" || !event.dataTransfer.types.includes(INTERNAL_PAGE_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    setSplitDropGroupId(groupId);
+  };
+
+  const leaveSplitGroupDrag = (event: DragEvent, groupId: string) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    if (splitDropGroupId === groupId) setSplitDropGroupId(null);
+  };
+
+  const dropSplitGroupDrag = (event: DragEvent, groupId: string) => {
+    if (toolType !== "pdf_split_groups" || !event.dataTransfer.types.includes(INTERNAL_PAGE_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sourcePage = Number(event.dataTransfer.getData(INTERNAL_PAGE_DRAG_TYPE)) || splitDragPage;
+    if (sourcePage) assignPageToGroup(sourcePage, groupId);
+    setSplitDragPage(null);
+    setSplitDropGroupId(null);
+    setIsSplitPageReturnActive(false);
   };
 
   return (
@@ -274,17 +370,6 @@ export function PdfToolsPanel({
             />
             날짜별 하위 폴더를 만들어 저장
           </label>
-          {toolType === "pdf_merge" && (
-            <label className="block text-sm font-medium text-stone-700">
-              결과 파일명
-              <input
-                value={outputName}
-                onChange={(event) => onOutputNameChange(event.target.value)}
-                placeholder="merged_pdf"
-                className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-white px-3 text-sm"
-              />
-            </label>
-          )}
         </div>
       </div>
 
@@ -322,94 +407,188 @@ export function PdfToolsPanel({
             )}
           </div>
 
-          {toolType === "pdf_split_groups" && (
-            <div className="mb-4 rounded-md border border-stone-200 bg-stone-50 p-3">
-              <label className="block text-sm font-medium text-stone-700">
-                그룹 이름
-                <input
-                  value={groupName}
-                  onChange={(event) => setGroupName(event.target.value)}
-                  placeholder={`group_${splitGroups.length + 1}`}
-                  className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-white px-3 text-sm"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={addGroup}
-                className="mt-3 h-9 w-full rounded-md bg-emerald-700 px-3 text-sm font-semibold text-white hover:bg-emerald-800"
-              >
-                선택 페이지를 그룹으로 추가
-              </button>
-              {splitGroups.length > 0 && (
-                <div className="mt-3 space-y-2">
-                  {splitGroups.map((group) => (
-                    <div key={group.id} className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-2 py-2 text-sm">
-                      <span className="min-w-0 truncate">
-                        {group.name}: {group.pages.join(", ")}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => removeGroup(group.id)}
-                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-rose-700"
-                        aria-label="그룹 제거"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+          {toolType === "pdf_split_groups" ? (
+            <div className="pdf-split-workspace">
+              <div className="min-w-0">
+                <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-stone-700">페이지</h4>
+                  <span className="text-[11px] text-stone-400">{availableSplitPages.length}개</span>
+                </div>
+                <div
+                  onDragEnter={overSplitPageReturnDrag}
+                  onDragOver={overSplitPageReturnDrag}
+                  onDragLeave={leaveSplitPageReturnDrag}
+                  onDrop={dropSplitPageReturnDrag}
+                  className={[
+                    "pdf-split-page-return-zone max-h-[420px] overflow-auto rounded-md border border-dashed border-stone-300 bg-white p-2",
+                    isSplitPageReturnActive ? "pdf-split-page-return-zone--active" : ""
+                  ].join(" ")}
+                >
+                  <div className="space-y-2">
+                    {availableSplitPages.length > 0 ? (
+                      availableSplitPages.map((page) => (
+                        <div
+                          key={page}
+                          role="button"
+                          tabIndex={0}
+                          draggable
+                          onClick={() => onPagePreviewChange(page)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              onPagePreviewChange(page);
+                            }
+                          }}
+                          onDragStart={(event) => startSplitPageDrag(event, page)}
+                          onDragEnd={(event) => {
+                            event.stopPropagation();
+                            setSplitDragPage(null);
+                            setSplitDropGroupId(null);
+                            setIsSplitPageReturnActive(false);
+                          }}
+                          className={[
+                            "pdf-split-page-card grid min-h-11 grid-cols-[auto_1fr] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2 py-2 text-sm",
+                            selectedPage === page ? "border-emerald-400 bg-emerald-50" : "",
+                            splitDragPage === page ? "pdf-split-page-card--dragging" : ""
+                          ].join(" ")}
+                        >
+                          <GripVertical size={15} className="cursor-grab text-stone-400" />
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium text-stone-800">
+                              페이지 {page}
+                              {pageRotations[page] ? <span className="ml-2 text-xs text-emerald-700">{pageRotations[page]}°</span> : null}
+                            </span>
+                            <span className="block truncate text-xs text-stone-400">그룹으로 끌어놓기</span>
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="rounded-md bg-stone-50 px-2 py-8 text-center text-xs leading-5 text-stone-400">
+                        그룹에서 빼려는 페이지를 여기에 놓으세요.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-w-0">
+                <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-stone-700">그룹</h4>
+                  <button
+                    type="button"
+                    onClick={addGroup}
+                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                  >
+                    <Plus size={14} />
+                    group +
+                  </button>
+                </div>
+                <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
+                  {activeSplitGroups.map((group, index) => (
+                    <div
+                      key={group.id}
+                      onDragEnter={(event) => overSplitGroupDrag(event, group.id)}
+                      onDragOver={(event) => overSplitGroupDrag(event, group.id)}
+                      onDragLeave={(event) => leaveSplitGroupDrag(event, group.id)}
+                      onDrop={(event) => dropSplitGroupDrag(event, group.id)}
+                      className={[
+                        "pdf-split-group-dropzone rounded-md border border-dashed border-stone-300 bg-white p-2",
+                        splitDropGroupId === group.id ? "pdf-split-group-dropzone--active" : ""
+                      ].join(" ")}
+                    >
+                      <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-stone-800">{group.name}</p>
+                          <p className="text-[11px] text-stone-400">{group.pages.length}페이지</p>
+                        </div>
+                        {index > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => removeGroup(group.id)}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-rose-700"
+                            aria-label={`${group.name} 제거`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                      {group.pages.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {sortPagesForActiveOrder(group.pages).map((page) => (
+                            <button
+                              key={`${group.id}-${page}`}
+                              type="button"
+                              draggable
+                              onClick={() => onPagePreviewChange(page)}
+                              onDragStart={(event) => startSplitPageDrag(event, page)}
+                              onDragEnd={(event) => {
+                                event.stopPropagation();
+                                setSplitDragPage(null);
+                                setSplitDropGroupId(null);
+                                setIsSplitPageReturnActive(false);
+                              }}
+                              className={[
+                                "pdf-split-page-chip inline-flex h-7 max-w-full items-center rounded-full bg-emerald-50 px-2 text-xs font-medium text-emerald-800 hover:bg-emerald-100",
+                                selectedPage === page ? "ring-2 ring-emerald-300 ring-offset-1" : "",
+                                splitDragPage === page ? "pdf-split-page-card--dragging" : ""
+                              ].join(" ")}
+                            >
+                              페이지 {page}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="rounded-md bg-stone-50 px-2 py-4 text-center text-xs leading-5 text-stone-400">
+                          페이지를 여기에 놓으세요.
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
-              )}
+              </div>
+            </div>
+          ) : (
+            <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
+              {activeOrder.map((page) => (
+                <div
+                  key={page}
+                  role="button"
+                  tabIndex={0}
+                  draggable={toolType === "pdf_reorder"}
+                  onClick={() => onPagePreviewChange(page)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onPagePreviewChange(page);
+                    }
+                  }}
+                  onDragStart={(event) => startPageDrag(event, page)}
+                  onDragOver={(event) => overPageDrag(event, page)}
+                  onDrop={(event) => dropPageDrag(event, page)}
+                  onDragEnd={(event) => {
+                    event.stopPropagation();
+                    setDragPage(null);
+                    setDropTargetPage(null);
+                  }}
+                  className={[
+                    "grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2 py-2 text-sm",
+                    selectedPage === page ? "border-emerald-400 bg-emerald-50" : "",
+                    dropTargetPage === page && dragPage !== page ? "ring-2 ring-emerald-300 ring-offset-1" : "",
+                    dragPage === page ? "opacity-55" : ""
+                  ].join(" ")}
+                >
+                  <div className="flex items-center gap-2">
+                    {toolType === "pdf_reorder" && <GripVertical size={15} className="cursor-grab text-stone-400" />}
+                  </div>
+                  <span className="font-medium text-stone-800">
+                    페이지 {page}
+                    {pageRotations[page] ? <span className="ml-2 text-xs text-emerald-700">{pageRotations[page]}°</span> : null}
+                  </span>
+                  <span className="text-xs text-stone-400">{toolType === "pdf_reorder" ? "드래그" : ""}</span>
+                </div>
+              ))}
             </div>
           )}
-
-          <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
-            {activeOrder.map((page) => (
-              <div
-                key={page}
-                role="button"
-                tabIndex={0}
-                draggable={toolType === "pdf_reorder"}
-                onClick={() => onPagePreviewChange(page)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onPagePreviewChange(page);
-                  }
-                }}
-                onDragStart={(event) => startPageDrag(event, page)}
-                onDragOver={(event) => overPageDrag(event, page)}
-                onDrop={(event) => dropPageDrag(event, page)}
-                onDragEnd={(event) => {
-                  event.stopPropagation();
-                  setDragPage(null);
-                  setDropTargetPage(null);
-                }}
-                className={[
-                  "grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2 py-2 text-sm",
-                  selectedPage === page ? "border-emerald-400 bg-emerald-50" : "",
-                  dropTargetPage === page && dragPage !== page ? "ring-2 ring-emerald-300 ring-offset-1" : "",
-                  dragPage === page ? "opacity-55" : ""
-                ].join(" ")}
-              >
-                <div className="flex items-center gap-2">
-                  {toolType === "pdf_reorder" && <GripVertical size={15} className="cursor-grab text-stone-400" />}
-                  {toolType === "pdf_split_groups" && (
-                    <input
-                      type="checkbox"
-                      checked={selectedPages.includes(page)}
-                      onChange={() => toggleSelectedPage(page)}
-                      className="h-4 w-4 accent-emerald-700"
-                    />
-                  )}
-                </div>
-                <span className="font-medium text-stone-800">
-                  페이지 {page}
-                  {pageRotations[page] ? <span className="ml-2 text-xs text-emerald-700">{pageRotations[page]}°</span> : null}
-                </span>
-                <span className="text-xs text-stone-400">{toolType === "pdf_reorder" ? "드래그" : ""}</span>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 

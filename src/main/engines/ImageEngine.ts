@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import heicConvert from "heic-convert";
+import { decodeBmpToPngBuffer } from "../services/BmpImageService.js";
 
 type ProgressCallback = (progress: number, message: string) => void;
 
@@ -90,7 +91,10 @@ export class ImageEngine {
     quality: number,
     onProgress: ProgressCallback
   ): Promise<void> {
-    await this.toJpg(inputPath, outputPath, quality, onProgress, "BMP");
+    onProgress(20, "BMP 이미지를 JPG로 변환하는 중입니다.");
+    const pngBuffer = await decodeBmpToPngBuffer(await readFile(inputPath));
+    await sharp(pngBuffer).flatten({ background: "#ffffff" }).jpeg({ quality }).toFile(outputPath);
+    onProgress(90, "JPG 파일을 저장했습니다.");
   }
 
   async bmpToPng(
@@ -98,7 +102,9 @@ export class ImageEngine {
     outputPath: string,
     onProgress: ProgressCallback
   ): Promise<void> {
-    await this.toPng(inputPath, outputPath, onProgress, "BMP");
+    onProgress(20, "BMP 이미지를 PNG로 변환하는 중입니다.");
+    await writeFile(outputPath, await decodeBmpToPngBuffer(await readFile(inputPath)));
+    onProgress(90, "PNG 파일을 저장했습니다.");
   }
 
   async heicToJpg(
@@ -124,6 +130,29 @@ export class ImageEngine {
     });
     await writeFile(outputPath, Buffer.from(output));
     onProgress(90, "JPG 파일을 저장했습니다.");
+  }
+
+  async heicToPng(
+    inputPath: string,
+    outputPath: string,
+    onProgress: ProgressCallback
+  ): Promise<void> {
+    onProgress(15, "HEIC 이미지를 읽는 중입니다.");
+    try {
+      await sharp(inputPath).rotate().png().toFile(outputPath);
+      onProgress(90, "PNG 파일을 저장했습니다.");
+      return;
+    } catch {
+      onProgress(40, "다른 HEIC 변환 엔진으로 다시 시도하는 중입니다.");
+    }
+
+    const input = await readFile(inputPath);
+    const output = await heicConvert({
+      buffer: input,
+      format: "PNG"
+    });
+    await writeFile(outputPath, Buffer.from(output));
+    onProgress(90, "PNG 파일을 저장했습니다.");
   }
 
   private async toJpg(

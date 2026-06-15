@@ -4,6 +4,7 @@ export type ConversionType =
   | "images_to_pdf"
   | "pdf_to_images"
   | "heic_to_jpg"
+  | "heic_to_png"
   | "png_to_jpg"
   | "jpg_to_png"
   | "image_to_webp"
@@ -69,6 +70,7 @@ export interface ConversionOptions {
   libreOfficePath?: string;
   sortMode?: SortMode;
   useDatedSubfolder?: boolean;
+  outputName?: string;
 }
 
 export interface ConversionJob {

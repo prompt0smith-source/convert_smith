@@ -44,6 +44,10 @@ export class EngineRouter {
         return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
           this.image.heicToJpg(input, output, job.options.imageQuality, onProgress)
         );
+      case "heic_to_png":
+        return this.convertEach(job, "png", createOutputPath, (input, output) =>
+          this.image.heicToPng(input, output, onProgress)
+        );
       case "png_to_jpg":
         return this.convertEach(job, "jpg", createOutputPath, (input, output) =>
           this.image.pngToJpg(input, output, job.options.imageQuality, onProgress)

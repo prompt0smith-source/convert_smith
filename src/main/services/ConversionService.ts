@@ -1,6 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdir, stat, readFile } from "node:fs/promises";
+import { mkdir, stat, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import type {
@@ -24,6 +24,7 @@ import { PdfEngine } from "../engines/PdfEngine.js";
 import { OfficeEngine } from "../engines/OfficeEngine.js";
 import { PdfToDocxEngine } from "../engines/PdfToDocxEngine.js";
 import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
+import { decodeBmpToPngBuffer } from "./BmpImageService.js";
 
 type JobUpdateCallback = (job: ConversionJob) => void;
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
@@ -35,7 +36,7 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   pdfImageFormat: "jpg",
   pdfRenderScale: 2,
   pdfPageSize: "auto",
-  pdfToDocxMode: "editable_text",
+  pdfToDocxMode: "visual_preservation",
   videoCompatibilityMode: true,
   overwritePolicy: "increment",
   sortMode: "basic",
@@ -105,7 +106,10 @@ export class ConversionService {
 
     if (kind === "image") {
       try {
-        const buffer = await sharp(resolved).rotate().png().toBuffer();
+        const buffer =
+          extension === ".bmp"
+            ? await decodeBmpToPngBuffer(await readFile(resolved))
+            : await sharp(resolved).rotate().png().toBuffer();
         return {
           ...basePreview,
           previewType: "image",
@@ -250,15 +254,36 @@ export class ConversionService {
       Object.assign(job, patch);
       onUpdate({ ...job, outputPaths: [...job.outputPaths] });
     };
+    const createdOutputPaths = new Set<string>();
 
     try {
       const targetOutputDir = options.useDatedSubfolder ? await this.createDatedOutputDir(outputDir) : outputDir;
       emit({ status: "running", progress: 2, message: "출력 폴더를 준비했습니다." });
 
+      const customOutputName = options.outputName?.trim();
+      let customOutputCounter = 0;
+      const trackOutputPath = (outputPath: string) => {
+        createdOutputPaths.add(outputPath);
+        return outputPath;
+      };
       const createOutputPath = async (sourcePath: string, extension: string) =>
-        this.createUniqueOutputPath(targetOutputDir, path.basename(sourcePath, path.extname(sourcePath)), extension);
+        trackOutputPath(await this.createUniqueOutputPath(
+          targetOutputDir,
+          customOutputName
+            ? this.makeCustomOutputBaseName(customOutputName, sourcePaths.length > 1 ? ++customOutputCounter : undefined)
+            : path.basename(sourcePath, path.extname(sourcePath)),
+          extension,
+          !customOutputName
+        ));
       const createNamedOutputPath = async (baseName: string, extension: string) =>
-        this.createUniqueOutputPath(targetOutputDir, path.basename(baseName, path.extname(baseName)), extension, false);
+        trackOutputPath(await this.createUniqueOutputPath(
+          targetOutputDir,
+          customOutputName
+            ? this.applyCustomNameToGeneratedBase(customOutputName, path.basename(baseName, path.extname(baseName)))
+            : path.basename(baseName, path.extname(baseName)),
+          extension,
+          false
+        ));
 
       const outputPaths = await this.router.convert(
         job,
@@ -285,12 +310,14 @@ export class ConversionService {
       });
     } catch (error) {
       const isCancelled = controller.signal.aborted;
+      const cleanedCount = await this.cleanupCreatedOutputs(createdOutputPaths, sourcePaths);
       emit({
         status: isCancelled ? "cancelled" : "failed",
         progress: isCancelled ? job.progress : Math.max(job.progress, 1),
         message: isCancelled
           ? "변환이 취소되었습니다."
-          : "파일을 변환하지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.",
+          : `파일을 변환하지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.${cleanedCount > 0 ? " 불완전한 출력 파일은 자동 정리했습니다." : ""}`,
+        outputPaths: [],
         error: this.toUserError(error),
         technicalDetails: error instanceof Error ? error.stack || error.message : String(error),
         completedAt: Date.now()
@@ -344,6 +371,17 @@ export class ConversionService {
     return sanitized || "converted_file";
   }
 
+  private makeCustomOutputBaseName(baseName: string, index?: number): string {
+    if (!index) return baseName;
+    return `${baseName}_${String(index).padStart(3, "0")}`;
+  }
+
+  private applyCustomNameToGeneratedBase(customBaseName: string, generatedBaseName: string): string {
+    const pageSuffix = generatedBaseName.match(/_page_\d+$/i)?.[0];
+    if (pageSuffix) return `${customBaseName}${pageSuffix}`;
+    return customBaseName;
+  }
+
   private async exists(filePath: string): Promise<boolean> {
     try {
       await stat(filePath);
@@ -351,6 +389,23 @@ export class ConversionService {
     } catch {
       return false;
     }
+  }
+
+  private async cleanupCreatedOutputs(outputPaths: Iterable<string>, sourcePaths: string[]): Promise<number> {
+    const sourceSet = new Set(sourcePaths.map((sourcePath) => path.resolve(sourcePath)));
+    let cleanedCount = 0;
+    for (const outputPath of outputPaths) {
+      const resolved = path.resolve(outputPath);
+      if (sourceSet.has(resolved)) continue;
+      try {
+        await stat(resolved);
+        await rm(resolved, { force: true });
+        cleanedCount += 1;
+      } catch {
+        // Cleanup must not hide the original conversion error.
+      }
+    }
+    return cleanedCount;
   }
 
   private detectKind(extension: string): FileKind {

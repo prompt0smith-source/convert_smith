@@ -80,7 +80,7 @@ export function OutputSettings({
             날짜별 하위 폴더를 만들어 저장
           </label>
           <p className="text-xs leading-5 text-stone-500">
-            꺼져 있으면 선택한 폴더에 바로 저장합니다. 켜면 YYYY-MM-DD 폴더 안에 저장합니다.
+            끄면 선택한 폴더에 바로 저장합니다. 켜면 YYYY-MM-DD 폴더 안에 저장합니다.
           </p>
         </div>
 
@@ -151,9 +151,14 @@ export function OutputSettings({
               onChange={(event) => update({ pdfToDocxMode: event.target.value as PdfToDocxMode })}
               className="h-9 w-full rounded-md border border-stone-300 bg-white px-2 text-sm"
             >
-              <option value="editable_text">편집형</option>
               <option value="visual_preservation">외형 보존형</option>
+              <option value="editable_text">편집형</option>
             </select>
+            {options.pdfToDocxMode === "visual_preservation" && (
+              <p className="rounded-md bg-stone-100 px-3 py-2 text-xs leading-5 text-stone-700">
+                {helperMessages.pdfToWordVisual}
+              </p>
+            )}
           </div>
         )}
 
@@ -165,7 +170,7 @@ export function OutputSettings({
 
         {selectedConversion === "xlsx_to_csv" && (
           <p className="rounded-md bg-stone-100 px-3 py-2 text-sm leading-6 text-stone-700">
-            CSV는 표 데이터 중심 형식입니다. 글꼴, 색상, 셀 병합 같은 엑셀 서식은 유지되지 않습니다.
+            CSV는 데이터 중심 형식입니다. 글꼴, 색상, 셀 병합 같은 엑셀 서식은 유지되지 않습니다.
           </p>
         )}
       </div>

@@ -6,11 +6,17 @@ const nodeRequire = createRequire(__filename);
 
 let pdfjsDistRoot: string | undefined;
 let canvasFontsReady = false;
+let canvasLocalFontFamilies: string[] | undefined;
 
 interface CanvasFontRegistry {
   loadSystemFonts?: () => number;
   loadFontsFromDir?: (dir: string) => number;
+  getFamilies?: () => Buffer | Uint8Array | ArrayBuffer | string;
   setAlias?: (family: string, alias: string) => boolean;
+}
+
+interface CanvasFontFamily {
+  family: string;
 }
 
 export function createPdfjsDocumentOptions(data: Uint8Array): Record<string, unknown> {
@@ -39,6 +45,8 @@ export function preparePdfCanvasFonts(canvasModule: { GlobalFonts?: CanvasFontRe
       if (existsSync(fontDir)) fonts.loadFontsFromDir?.(fontDir);
     }
 
+    captureCanvasLocalFonts(fonts);
+
     setAliases(fonts, "Times New Roman", ["Times", "Times-Roman", "TimesNewRoman", "Times New Roman PS"]);
     setAliases(fonts, "Arial", ["Helvetica", "Helvetica Neue", "ArialMT"]);
     setAliases(fonts, "Courier New", ["Courier", "CourierNew", "CourierStd"]);
@@ -59,6 +67,10 @@ export function preparePdfCanvasFonts(canvasModule: { GlobalFonts?: CanvasFontRe
   } catch {
     // Font registration is a best-effort fallback. PDF rendering can still continue.
   }
+}
+
+export function getPreparedCanvasLocalFontFamilies(): string[] | undefined {
+  return canvasLocalFontFamilies ? [...canvasLocalFontFamilies] : undefined;
 }
 
 function getPdfjsDistRoot(): string {
@@ -83,5 +95,40 @@ function setAliases(fonts: CanvasFontRegistry, family: string, aliases: string[]
     } catch {
       // Ignore unsupported aliases.
     }
+  }
+}
+
+function captureCanvasLocalFonts(fonts: CanvasFontRegistry): void {
+  if (canvasLocalFontFamilies) return;
+
+  try {
+    const raw = fonts.getFamilies?.();
+    const parsed = parseCanvasFontFamilies(raw);
+    canvasLocalFontFamilies = Array.from(
+      new Set(
+        parsed
+          .map((item: CanvasFontFamily) => item.family)
+          .filter((family: unknown): family is string => typeof family === "string" && family.trim().length > 0)
+      )
+    ).sort((a: string, b: string) => a.localeCompare(b, "en"));
+  } catch {
+    canvasLocalFontFamilies = [];
+  }
+}
+
+function parseCanvasFontFamilies(raw: Buffer | Uint8Array | ArrayBuffer | string | undefined): CanvasFontFamily[] {
+  if (!raw) return [];
+
+  try {
+    const json =
+      typeof raw === "string"
+        ? raw
+        : raw instanceof ArrayBuffer
+          ? Buffer.from(new Uint8Array(raw)).toString("utf8")
+          : Buffer.from(raw).toString("utf8");
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }

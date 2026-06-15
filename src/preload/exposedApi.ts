@@ -13,6 +13,7 @@ import type {
 export interface ConvertSmithApi {
   getDroppedFilePaths(files: File[]): string[];
   resolveDroppedFiles(paths: string[], dropIndexOffset?: number): Promise<FileItem[]>;
+  resolveClipboardFiles(dropIndexOffset?: number, includeTextPaths?: boolean): Promise<FileItem[]>;
   selectFiles(): Promise<FileItem[]>;
   selectOutputDirectory(): Promise<string | null>;
   selectLibreOfficePath(): Promise<string | null>;
@@ -32,6 +33,7 @@ export interface ConvertSmithApi {
   showMainFromFloating(): Promise<boolean>;
   moveFloating(x: number, y: number): Promise<boolean>;
   getAppIconDataUrl(): Promise<string>;
+  quitApp(): Promise<boolean>;
   onJobUpdate(listener: (job: ConversionJob) => void): () => void;
   onPdfToolUpdate(listener: (job: PdfToolJob) => void): () => void;
 }

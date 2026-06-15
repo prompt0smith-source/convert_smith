@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, stat, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type {
   PdfDocumentInfo,
@@ -58,20 +58,33 @@ export class PdfToolService {
       Object.assign(job, patch);
       onUpdate({ ...job, outputPaths: [...job.outputPaths] });
     };
+    const createdOutputPaths = new Set<string>();
 
     try {
       const targetOutputDir = options.useDatedSubfolder ? await this.createDatedOutputDir(outputDir) : outputDir;
       emit({ status: "running", progress: 5, message: "PDF 작업 폴더를 준비했습니다." });
 
+      const customOutputName = options.outputName?.trim();
+      const trackOutputPath = (outputPath: string) => {
+        createdOutputPaths.add(outputPath);
+        return outputPath;
+      };
       const createNamedOutputPath = async (baseName: string, extension: string) =>
-        this.createUniqueOutputPath(targetOutputDir, baseName, extension, false);
-      const createOutputPath = async (sourcePath: string, suffix: string) =>
-        this.createUniqueOutputPath(
+        trackOutputPath(await this.createUniqueOutputPath(
           targetOutputDir,
-          `${path.basename(sourcePath, path.extname(sourcePath))}_${suffix}`,
+          customOutputName ? this.applyCustomNameToGeneratedBase(customOutputName, baseName) : baseName,
+          extension,
+          false
+        ));
+      const createRawNamedOutputPath = async (baseName: string, extension: string) =>
+        trackOutputPath(await this.createUniqueOutputPath(targetOutputDir, baseName, extension, false));
+      const createOutputPath = async (sourcePath: string, suffix: string) =>
+        trackOutputPath(await this.createUniqueOutputPath(
+          targetOutputDir,
+          customOutputName || `${path.basename(sourcePath, path.extname(sourcePath))}_${suffix}`,
           "pdf",
           false
-        );
+        ));
 
       const rotations = options.pageRotations || {};
       let outputPaths: string[];
@@ -96,10 +109,17 @@ export class PdfToolService {
           (progress, message) => emit({ progress, message })
         );
       } else if (payload.toolType === "pdf_split_groups") {
+        const groups =
+          customOutputName && options.splitGroups
+            ? options.splitGroups.map((group, index) => ({
+                ...group,
+                name: `${customOutputName}_group_${String(index + 1).padStart(3, "0")}`
+              }))
+            : options.splitGroups || [];
         outputPaths = await this.engine.splitGroups(
           sourcePaths[0],
-          options.splitGroups || [],
-          createNamedOutputPath,
+          groups,
+          createRawNamedOutputPath,
           rotations,
           (progress, message) => emit({ progress, message })
         );
@@ -129,10 +149,12 @@ export class PdfToolService {
         completedAt: Date.now()
       });
     } catch (error) {
+      const cleanedCount = await this.cleanupCreatedOutputs(createdOutputPaths, sourcePaths);
       emit({
         status: "failed",
         progress: Math.max(job.progress, 1),
-        message: "PDF 작업을 완료하지 못했습니다.",
+        message: `PDF 작업을 완료하지 못했습니다.${cleanedCount > 0 ? " 불완전한 출력 파일은 자동 정리했습니다." : ""}`,
+        outputPaths: [],
         error: error instanceof Error ? error.message : String(error),
         technicalDetails: error instanceof Error ? error.stack || error.message : String(error),
         completedAt: Date.now()
@@ -206,6 +228,12 @@ export class PdfToolService {
     return sanitized || "pdf_output";
   }
 
+  private applyCustomNameToGeneratedBase(customBaseName: string, generatedBaseName: string): string {
+    const pageSuffix = generatedBaseName.match(/_page_\d+$/i)?.[0];
+    if (pageSuffix) return `${customBaseName}${pageSuffix}`;
+    return customBaseName;
+  }
+
   private async exists(filePath: string): Promise<boolean> {
     try {
       await stat(filePath);
@@ -213,5 +241,22 @@ export class PdfToolService {
     } catch {
       return false;
     }
+  }
+
+  private async cleanupCreatedOutputs(outputPaths: Iterable<string>, sourcePaths: string[]): Promise<number> {
+    const sourceSet = new Set(sourcePaths.map((sourcePath) => path.resolve(sourcePath)));
+    let cleanedCount = 0;
+    for (const outputPath of outputPaths) {
+      const resolved = path.resolve(outputPath);
+      if (sourceSet.has(resolved)) continue;
+      try {
+        await stat(resolved);
+        await rm(resolved, { force: true });
+        cleanedCount += 1;
+      } catch {
+        // Cleanup must not hide the original PDF tool error.
+      }
+    }
+    return cleanedCount;
   }
 }

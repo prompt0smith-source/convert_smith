@@ -6,6 +6,7 @@ export const conversionLabels: Record<ConversionType, string> = {
   images_to_pdf: "이미지 → PDF",
   pdf_to_images: "PDF → JPG / PNG",
   heic_to_jpg: "HEIC → JPG",
+  heic_to_png: "HEIC → PNG",
   png_to_jpg: "PNG → JPG",
   jpg_to_png: "JPG → PNG",
   image_to_webp: "JPG / PNG → WEBP",
@@ -37,13 +38,13 @@ export const conversionDescriptions: Record<ConversionType, string> = {
   images_to_pdf: "이미지 여러 장을 하나의 PDF 문서로 묶습니다. JPG, PNG, WEBP, AVIF, TIFF, BMP를 지원합니다.",
   pdf_to_images: "PDF 각 페이지를 이미지 파일로 추출합니다.",
   heic_to_jpg: "아이폰 사진을 윈도우와 웹에서 열기 쉬운 JPG로 변환합니다.",
+  heic_to_png: "HEIC 사진을 PNG 형식으로 변환합니다. HEVC 저장 인코더는 필요하지 않습니다.",
   png_to_jpg: "투명 배경은 흰색으로 합쳐지고, 일반 JPG 이미지로 변환됩니다.",
-  jpg_to_png:
-    "JPG 이미지를 PNG 형식으로 변환합니다. 단, 배경이 자동으로 투명해지지는 않습니다.",
-  image_to_webp: "JPG 또는 PNG 이미지를 웹에 쓰기 좋은 WEBP 파일로 다시 인코딩합니다.",
-  webp_to_jpg: "WEBP 이미지를 일반 프로그램에서 열기 쉬운 JPG로 변환합니다. 투명 영역은 흰색으로 합성됩니다.",
+  jpg_to_png: "JPG 이미지를 PNG 형식으로 변환합니다. 단, 배경이 자동으로 투명해지지는 않습니다.",
+  image_to_webp: "JPG 또는 PNG 이미지를 웹에 올리기 좋은 WEBP 파일로 다시 인코딩합니다.",
+  webp_to_jpg: "WEBP 이미지를 일반 프로그램에서 열기 쉬운 JPG로 변환합니다. 투명 영역은 흰색으로 합성합니다.",
   webp_to_png: "WEBP 이미지를 PNG로 변환합니다. 투명 정보가 있으면 유지합니다.",
-  avif_to_jpg: "AVIF 이미지를 호환성 높은 JPG로 변환합니다.",
+  avif_to_jpg: "AVIF 이미지를 호환성이 높은 JPG로 변환합니다.",
   avif_to_png: "AVIF 이미지를 PNG로 변환합니다.",
   tiff_to_jpg: "스캔 이미지나 인쇄용 TIFF를 일반 JPG로 변환합니다.",
   tiff_to_png: "TIFF 이미지를 PNG로 변환합니다.",
@@ -76,7 +77,7 @@ export const pdfToolDescriptions: Record<PdfToolType, string> = {
   pdf_reorder: "선택한 PDF의 페이지 순서를 바꿔 새 PDF로 저장합니다.",
   pdf_split_all: "선택한 PDF를 페이지마다 개별 PDF로 나눕니다.",
   pdf_split_groups: "원하는 페이지 묶음별로 PDF를 나눠 저장합니다.",
-  pdf_rotate_pages: "선택한 PDF 페이지의 회전 상태를 적용해 새 PDF로 저장합니다."
+  pdf_rotate_pages: "선택한 PDF 페이지의 회전 상태를 적용한 새 PDF로 저장합니다."
 };
 
 export function getCommonConversions(items: FileItem[]): ConversionType[] {

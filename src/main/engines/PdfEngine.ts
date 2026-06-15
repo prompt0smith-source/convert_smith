@@ -5,6 +5,7 @@ import sharp from "sharp";
 import type { PdfImageFormat, PdfPageSize } from "../types/conversion.js";
 import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "../services/PdfjsAssetService.js";
 import { PdfiumRenderService } from "../services/PdfiumRenderService.js";
+import { decodeBmpToPngBuffer } from "../services/BmpImageService.js";
 
 type ProgressCallback = (progress: number, message: string) => void;
 type CreateNamedOutputPath = (baseName: string, extension: string) => Promise<string>;
@@ -32,14 +33,15 @@ export class PdfEngine {
         `이미지 ${index + 1}/${inputPaths.length}장을 PDF에 추가하는 중입니다.`
       );
       const imageBytes = await readFile(inputPath);
-      const metadata = await sharp(imageBytes).metadata();
+      const extension = path.extname(inputPath).toLowerCase();
+      const normalizedImageBytes = extension === ".bmp" ? await decodeBmpToPngBuffer(imageBytes) : imageBytes;
+      const metadata = await sharp(normalizedImageBytes).metadata();
       const width = metadata.width || 595;
       const height = metadata.height || 842;
-      const extension = path.extname(inputPath).toLowerCase();
       const embeddedImage =
-        extension === ".png"
-          ? await pdfDoc.embedPng(imageBytes)
-          : await pdfDoc.embedJpg(await sharp(imageBytes).jpeg({ quality: 95 }).toBuffer());
+        extension === ".png" || extension === ".bmp"
+          ? await pdfDoc.embedPng(normalizedImageBytes)
+          : await pdfDoc.embedJpg(await sharp(normalizedImageBytes).jpeg({ quality: 95 }).toBuffer());
       const [pageWidth, pageHeight] = this.resolvePageSize(pageSize, width, height);
       const page = pdfDoc.addPage([pageWidth, pageHeight]);
       const scaled = embeddedImage.scaleToFit(pageWidth, pageHeight);

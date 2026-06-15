@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("convertSmith", {
       .filter(Boolean),
   resolveDroppedFiles: (paths, dropIndexOffset) =>
     ipcRenderer.invoke("files:resolveDropped", paths, dropIndexOffset),
+  resolveClipboardFiles: (dropIndexOffset, includeTextPaths) =>
+    ipcRenderer.invoke("files:resolveClipboard", dropIndexOffset, includeTextPaths),
   selectFiles: () => ipcRenderer.invoke("dialog:selectFiles"),
   selectOutputDirectory: () => ipcRenderer.invoke("dialog:selectOutputDirectory"),
   selectLibreOfficePath: () => ipcRenderer.invoke("dialog:selectLibreOfficePath"),
@@ -27,6 +29,7 @@ contextBridge.exposeInMainWorld("convertSmith", {
   showMainFromFloating: () => ipcRenderer.invoke("floating:showMain"),
   moveFloating: (x, y) => ipcRenderer.invoke("floating:move", x, y),
   getAppIconDataUrl: () => ipcRenderer.invoke("app:getIconDataUrl"),
+  quitApp: () => ipcRenderer.invoke("app:quit"),
   onJobUpdate: (listener) => {
     const wrapped = (_event, job) => listener(job);
     ipcRenderer.on("conversion:jobUpdated", wrapped);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, CheckCircle2, FileCog, FileStack, ShieldCheck, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, FileCog, FileStack, ShieldCheck, X, XCircle } from "lucide-react";
 import type {
   ConversionJob,
   ConversionOptions,
@@ -22,7 +22,7 @@ import { OutputSettings } from "./components/OutputSettings";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { UtilityDrawer } from "./components/UtilityDrawer";
 import { PdfToolsPanel } from "./components/PdfToolsPanel";
-import { getCommonConversions } from "./lib/formatLabels";
+import { formatBytes, getCommonConversions } from "./lib/formatLabels";
 import { helperMessages, practicalError } from "./lib/koreanMessages";
 
 const DEFAULT_OPTIONS: ConversionOptions = {
@@ -30,7 +30,7 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   pdfImageFormat: "jpg",
   pdfRenderScale: 2,
   pdfPageSize: "auto",
-  pdfToDocxMode: "editable_text",
+  pdfToDocxMode: "visual_preservation",
   videoCompatibilityMode: true,
   overwritePolicy: "increment",
   sortMode: "basic",
@@ -44,6 +44,8 @@ const CLEAR_AFTER_SUCCESS_STORAGE_KEY = "convertSmith.clearFilesAfterSuccess";
 const OPEN_FOLDER_AFTER_SUCCESS_STORAGE_KEY = "convertSmith.openFolderAfterSuccess";
 const OPEN_FILE_AFTER_SUCCESS_STORAGE_KEY = "convertSmith.openFileAfterSuccess";
 const STORAGE_GUIDE_KEY = "convertSmith.storageGuideSeen";
+const TERMS_ACCEPTED_STORAGE_KEY = "convertSmith.termsAcceptedVersion";
+const TERMS_VERSION = "2026-06-15";
 const INTERNAL_FILE_DRAG_TYPE = "application/x-convert-smith-file-id";
 const INTERNAL_PAGE_DRAG_TYPE = "application/x-convert-smith-page";
 
@@ -68,6 +70,32 @@ interface ActiveRunJobState {
   message: string;
 }
 
+interface PlannedConversionEntry {
+  file: FileItem;
+  conversionType?: ConversionType;
+}
+
+interface PreflightNoticeItem {
+  tone: "info" | "success" | "warning" | "error";
+  title: string;
+  message: string;
+}
+
+const LIBRE_OFFICE_CONVERSIONS = new Set<ConversionType>([
+  "docx_to_pdf",
+  "xlsx_to_pdf",
+  "xlsx_to_csv",
+  "pptx_to_pdf"
+]);
+
+const VIDEO_ESTIMATE_CONVERSIONS = new Set<ConversionType>([
+  "mp4_to_mp3",
+  "mov_to_mp4",
+  "webm_to_mp4",
+  "mkv_to_mp4",
+  "video_compatibility_repair"
+]);
+
 export function App(): JSX.Element {
   const rememberedOutputDir = localStorage.getItem(OUTPUT_DIR_STORAGE_KEY) || undefined;
   const notifiedJobIds = useRef<Set<string>>(new Set());
@@ -87,7 +115,7 @@ export function App(): JSX.Element {
   const [batchConversionType, setBatchConversionType] = useState<ConversionType>();
   const [individualTargets, setIndividualTargets] = useState<Record<string, ConversionType>>({});
   const [pdfToolType, setPdfToolType] = useState<PdfToolType>("pdf_merge");
-  const [pdfOutputName, setPdfOutputName] = useState("merged_pdf");
+  const [outputName, setOutputName] = useState("");
   const [pdfPreviewPage, setPdfPreviewPage] = useState(1);
   const [pdfPageOrder, setPdfPageOrder] = useState<number[]>([]);
   const [pdfPageRotations, setPdfPageRotations] = useState<Record<number, PdfRotation>>({});
@@ -123,6 +151,18 @@ export function App(): JSX.Element {
   const [arrowBurst, setArrowBurst] = useState(false);
   const [toast, setToast] = useState<ConversionToast>();
   const [loadingOverlay, setLoadingOverlay] = useState<LoadingOverlayState>();
+  const [termsAccepted, setTermsAccepted] = useState(
+    () => localStorage.getItem(TERMS_ACCEPTED_STORAGE_KEY) === TERMS_VERSION
+  );
+
+  const plannedConversionEntries = useMemo(
+    () => getPlannedConversionEntries(files, sortMode, convertMode, batchConversionType, individualTargets),
+    [batchConversionType, convertMode, files, individualTargets, sortMode]
+  );
+  const conversionPreflightItems = useMemo(
+    () => buildConversionPreflightItems(plannedConversionEntries, dependencyStatus),
+    [dependencyStatus, plannedConversionEntries]
+  );
 
   const displayFiles = useMemo(() => sortFiles(files, sortMode), [files, sortMode]);
   const selectedFile = files.find((item) => item.id === selectedFileId) || files[0];
@@ -489,6 +529,29 @@ export function App(): JSX.Element {
     };
   }, [resolvePaths]);
 
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      void (async () => {
+        const includeTextPaths = !isEditablePasteTarget(event.target);
+        const pastedPaths = await extractDroppedPaths(event.clipboardData);
+        if (pastedPaths.length > 0) {
+          event.preventDefault();
+          await resolvePaths(pastedPaths);
+          return;
+        }
+
+        const items = await window.convertSmith.resolveClipboardFiles(files.length, includeTextPaths);
+        if (items.length === 0) return;
+        event.preventDefault();
+        addFileItems(items);
+        setNotice("클립보드의 파일을 목록에 추가했습니다.");
+      })().catch((error: unknown) => setNotice(practicalError(error)));
+    };
+
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [addFileItems, files.length, resolvePaths]);
+
   const pickFiles = async () => {
     try {
       const items = await window.convertSmith.selectFiles();
@@ -550,6 +613,27 @@ export function App(): JSX.Element {
       setFloatingEnabled((current) => !current);
     }
   };
+
+  const ensureConversionPreflightReady = useCallback(async (): Promise<boolean> => {
+    if (displayedWorkMode !== "convert") return true;
+    const needsLibreOffice = plannedConversionEntries.some(
+      (entry) => entry.conversionType && LIBRE_OFFICE_CONVERSIONS.has(entry.conversionType)
+    );
+    if (!needsLibreOffice) return true;
+
+    try {
+      const status = await window.convertSmith.getDependencyStatus(options.libreOfficePath);
+      setDependencyStatus(status);
+      if (status.libreOffice.available) return true;
+      setNotice(
+        "이 변환은 LibreOffice가 필요합니다. 우측 상단 옵션에서 LibreOffice 경로를 지정한 뒤 다시 시작해주세요."
+      );
+      return false;
+    } catch (error) {
+      setNotice(practicalError(error));
+      return false;
+    }
+  }, [displayedWorkMode, options.libreOfficePath, plannedConversionEntries]);
 
   const startConversion = async () => {
     if (files.length === 0) {
@@ -613,7 +697,7 @@ export function App(): JSX.Element {
       sourcePaths,
       outputDir: targetOutputDir,
       conversionType,
-      options: { ...options, sortMode }
+      options: { ...options, sortMode, outputName: outputName.trim() || undefined }
     };
     const job = await window.convertSmith.startConversion(payload);
     upsertJob(job);
@@ -651,7 +735,7 @@ export function App(): JSX.Element {
       outputDir: targetOutputDir,
       toolType: pdfToolType,
       options: {
-        outputName: pdfOutputName,
+        outputName: outputName.trim() || undefined,
         pageOrder: pdfPageOrder,
         pageRotations: pdfPageRotations,
         splitGroups: pdfSplitGroups,
@@ -671,9 +755,13 @@ export function App(): JSX.Element {
     window.requestAnimationFrame(() => setArrowBurst(true));
     window.setTimeout(() => setArrowBurst(false), 620);
     const run = displayedWorkMode === "pdf_tools" ? startPdfTool : startConversion;
-    beginLoadingOverlay(displayedWorkMode === "pdf_tools" ? "PDF 작업을 준비하고 있습니다." : "파일 변환을 준비하고 있습니다.");
     setIsConverting(true);
-    void run()
+    void (async () => {
+      const ready = await ensureConversionPreflightReady();
+      if (!ready) return;
+      beginLoadingOverlay(displayedWorkMode === "pdf_tools" ? "PDF 작업을 준비하고 있습니다." : "파일 변환을 준비하고 있습니다.");
+      await run();
+    })()
       .catch((error: unknown) => setNotice(practicalError(error)))
       .finally(() => {
         setIsConverting(false);
@@ -750,6 +838,15 @@ export function App(): JSX.Element {
     }
   };
 
+  const acceptTerms = () => {
+    localStorage.setItem(TERMS_ACCEPTED_STORAGE_KEY, TERMS_VERSION);
+    setTermsAccepted(true);
+  };
+
+  const declineTerms = () => {
+    void window.convertSmith.quitApp().catch(() => window.close());
+  };
+
   return (
     <div
       className={[
@@ -767,14 +864,15 @@ export function App(): JSX.Element {
 
       {toast && <ConversionToastView key={toast.id} toast={toast} onClose={() => setToast(undefined)} />}
       {loadingOverlay && <ConversionLoadingOverlay state={loadingOverlay} />}
+      {!termsAccepted && <TermsAgreementModal onAgree={acceptTerms} onDecline={declineTerms} />}
 
-      <header className="border-b border-stone-200 bg-white px-6 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
+      <header className="app-header border-b border-stone-200 bg-white px-6 py-4">
+        <div className="app-header-inner flex items-center justify-between gap-4">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold tracking-normal text-stone-950">Convert Smith</h1>
             <p className="mt-1 text-sm text-stone-600">{helperMessages.appSubtitle}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="app-header-actions flex items-center gap-3">
             <div className="inline-grid grid-cols-2 rounded-md border border-stone-200 bg-stone-100 p-1 text-sm">
               <button
                 type="button"
@@ -810,9 +908,6 @@ export function App(): JSX.Element {
               libreOfficePath={options.libreOfficePath}
               darkMode={darkMode}
               floatingEnabled={floatingEnabled}
-              clearFilesAfterSuccess={clearFilesAfterSuccess}
-              openFolderAfterSuccess={openFolderAfterSuccess}
-              openFileAfterSuccess={openFileAfterSuccess}
               onToggle={() => setIsUtilityOpen((value) => !value)}
               onClose={() => setIsUtilityOpen(false)}
               onRefreshDependencies={refreshDependencies}
@@ -820,9 +915,6 @@ export function App(): JSX.Element {
               onOpenLibreOfficeDownload={openLibreOfficeDownload}
               onDarkModeChange={setDarkMode}
               onFloatingEnabledChange={changeFloatingEnabled}
-              onClearFilesAfterSuccessChange={setClearFilesAfterSuccess}
-              onOpenFolderAfterSuccessChange={setOpenFolderAfterSuccess}
-              onOpenFileAfterSuccessChange={setOpenFileAfterSuccess}
               onCancelJob={(jobId) => void window.convertSmith.cancelConversion(jobId)}
               onReveal={revealPath}
               onCopy={copyPath}
@@ -837,15 +929,23 @@ export function App(): JSX.Element {
         </div>
       )}
 
-      <main className="grid min-h-0 flex-1 grid-cols-[minmax(320px,31%)_64px_minmax(340px,30%)_minmax(420px,1fr)]">
+      <main className="app-main-grid grid min-h-0 flex-1">
         <DropZone
           files={files}
           displayFiles={displayFiles}
           sortMode={sortMode}
           selectedFileId={selectedFile?.id}
           isDragging={isDragging}
+          clearFilesAfterSuccess={clearFilesAfterSuccess}
+          openFolderAfterSuccess={openFolderAfterSuccess}
+          openFileAfterSuccess={openFileAfterSuccess}
+          outputName={outputName}
           onPickFiles={pickFiles}
           onSortModeChange={setSortMode}
+          onClearFilesAfterSuccessChange={setClearFilesAfterSuccess}
+          onOpenFolderAfterSuccessChange={setOpenFolderAfterSuccess}
+          onOpenFileAfterSuccessChange={setOpenFileAfterSuccess}
+          onOutputNameChange={setOutputName}
           onSelectFile={(item) => setSelectedFileId(item.id)}
           onRemoveFile={removeFile}
           onReorderFiles={reorderFiles}
@@ -898,6 +998,7 @@ export function App(): JSX.Element {
                 onUseSourceFolderChange={changeUseSourceFolder}
                 onOptionsChange={setOptions}
               />
+              <PreflightNoticePanel items={conversionPreflightItems} />
             </section>
           ) : (
             <PdfToolsPanel
@@ -908,7 +1009,6 @@ export function App(): JSX.Element {
               useSourceFolder={useSourceFolder}
               useDatedSubfolder={Boolean(options.useDatedSubfolder)}
               toolType={pdfToolType}
-              outputName={pdfOutputName}
               selectedPage={pdfPreviewPage}
               pageOrder={pdfPageOrder}
               pageRotations={pdfPageRotations}
@@ -916,7 +1016,6 @@ export function App(): JSX.Element {
               pdfToolJobs={pdfToolJobs}
               onSelectFile={(item) => setSelectedFileId(item.id)}
               onToolTypeChange={setPdfToolType}
-              onOutputNameChange={setPdfOutputName}
               onPagePreviewChange={setPdfPreviewPage}
               onPageOrderChange={setPdfPageOrder}
               onPageRotationsChange={setPdfPageRotations}
@@ -944,7 +1043,97 @@ export function App(): JSX.Element {
           }
         />
       </main>
+
+      <footer className="app-footer flex h-7 shrink-0 items-center justify-center border-t border-stone-200 bg-white px-4 text-[11px] font-semibold tracking-[0.08em] text-stone-500">
+        COPYRIGHT © JINKYU YOO
+      </footer>
     </div>
+  );
+}
+
+function TermsAgreementModal({
+  onAgree,
+  onDecline
+}: {
+  onAgree: () => void;
+  onDecline: () => void;
+}): JSX.Element {
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm">
+      <section className="terms-modal flex max-h-[calc(100vh-32px)] w-full max-w-2xl flex-col overflow-hidden rounded-md border border-stone-200 bg-white text-stone-900 shadow-2xl">
+        <div className="border-b border-stone-200 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">Convert Smith</p>
+          <h2 className="mt-1 text-xl font-bold tracking-normal text-stone-950">이용 약관 및 면책 안내</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">
+            Convert Smith를 사용하려면 아래 약관에 동의해야 합니다. 동의하지 않으면 프로그램이 종료됩니다.
+          </p>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-auto px-5 py-4 text-sm leading-6 text-stone-700">
+          <TermsBlock title="저작권 및 이용 범위">
+            Convert Smith의 프로그램명, 화면 구성, 자체 코드, 문구, 아이콘 구성 및 배포 패키지의 권리는
+            JINKYU YOO에게 있습니다. 명시적인 서면 허가 없이 설치 파일, 앱 패키지, 소스, 리소스 또는 그
+            일부를 복제, 재배포, 재판매, 재패키징, 변조 배포하거나 제3자에게 제공할 수 없습니다. 무단
+            배포와 무단 복제는 허용되지 않습니다.
+          </TermsBlock>
+
+          <TermsBlock title="로컬 변환과 결과 책임">
+            Convert Smith는 파일을 클라우드로 업로드하지 않고 사용자의 PC에서 로컬 변환을 수행합니다.
+            다만 손상, 암호화, DRM 보호, 비표준 구조, 지원되지 않는 코덱 또는 외부 변환 엔진 제한이 있는
+            파일은 변환에 실패하거나 결과 품질이 원본과 다를 수 있습니다. 중요한 파일은 변환 전 별도
+            백업을 유지해야 하며, 변환 결과의 확인과 사용 책임은 사용자에게 있습니다.
+          </TermsBlock>
+
+          <TermsBlock title="면책">
+            Convert Smith는 파일 변환, 복구, PDF/문서 레이아웃 보존, 코덱 호환성 개선을 보조하는 도구이며
+            모든 파일의 정상 변환, 완전한 복구, 원본과 100% 동일한 서식 보존을 보장하지 않습니다. 법령이
+            허용하는 범위에서, 프로그램 사용 또는 사용 불가로 발생하는 데이터 손상, 업무 지연, 기대 이익
+            손실, 제3자 분쟁 등 간접적 손해에 대해 개발자는 책임을 부담하지 않습니다.
+          </TermsBlock>
+
+          <TermsBlock title="오픈소스 구성요소">
+            FFmpeg, FFprobe, Electron, React, Sharp, pdf-lib, pdfjs-dist 등 포함된 오픈소스 구성요소는 각
+            프로젝트의 라이선스가 적용됩니다. 본 약관은 해당 오픈소스 라이선스가 사용자에게 부여하는
+            권리를 제한하거나 무효화하지 않습니다. 자세한 고지와 소스 제공 안내는 설치 폴더의
+            THIRD_PARTY_NOTICES.md 및 legal 폴더를 확인하세요.
+          </TermsBlock>
+
+          <TermsBlock title="금지되는 사용">
+            타인의 저작권, 영업비밀, 개인정보, 보안 정책을 침해하는 방식으로 파일을 변환하거나 배포해서는
+            안 됩니다. 불법 복제물, 권한 없는 DRM 우회, 악성 파일 제작 또는 배포 목적의 사용은 허용되지
+            않습니다.
+          </TermsBlock>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-stone-200 bg-stone-50 px-5 py-4">
+          <button
+            type="button"
+            onClick={onDecline}
+            className="inline-flex h-10 min-w-[120px] items-center justify-center gap-2 rounded-md border border-stone-300 bg-white px-4 text-sm font-semibold text-stone-700 hover:bg-stone-100"
+          >
+            <XCircle size={16} />
+            동의하지 않음
+          </button>
+          <button
+            type="button"
+            onClick={onAgree}
+            className="inline-flex h-10 min-w-[140px] items-center justify-center gap-2 rounded-md bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800"
+          >
+            <CheckCircle2 size={16} />
+            동의하고 시작
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TermsBlock({ title, children }: { title: string; children: string }): JSX.Element {
+  return (
+    <section className="rounded-md border border-stone-200 bg-stone-50 px-4 py-3">
+      <h3 className="text-sm font-semibold text-stone-950">{title}</h3>
+      <p className="mt-1 text-sm leading-6 text-stone-700">{children}</p>
+    </section>
   );
 }
 
@@ -1062,6 +1251,41 @@ function WaterDropLoader(): JSX.Element {
   );
 }
 
+function PreflightNoticePanel({ items }: { items: PreflightNoticeItem[] }): JSX.Element | null {
+  if (items.length === 0) return null;
+
+  return (
+    <section className="border-b border-stone-200 bg-white p-4">
+      <h2 className="mb-3 text-base font-semibold text-stone-900">변환 전 확인</h2>
+      <div className="space-y-2">
+        {items.map((item) => (
+          <div key={`${item.title}-${item.message}`} className={getPreflightToneClass(item.tone)}>
+            <span className="mt-0.5 flex-none">{getPreflightIcon(item.tone)}</span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">{item.title}</p>
+              <p className="mt-1 text-xs leading-5">{item.message}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function getPreflightToneClass(tone: PreflightNoticeItem["tone"]): string {
+  const base = "flex items-start gap-2 rounded-md border px-3 py-2";
+  if (tone === "error") return `${base} border-red-200 bg-red-50 text-red-900`;
+  if (tone === "warning") return `${base} border-amber-200 bg-amber-50 text-amber-900`;
+  if (tone === "success") return `${base} border-emerald-200 bg-emerald-50 text-emerald-900`;
+  return `${base} border-stone-200 bg-stone-50 text-stone-700`;
+}
+
+function getPreflightIcon(tone: PreflightNoticeItem["tone"]): JSX.Element {
+  if (tone === "error" || tone === "warning") return <AlertTriangle size={16} />;
+  if (tone === "success") return <CheckCircle2 size={16} />;
+  return <ShieldCheck size={16} />;
+}
+
 function sortFiles(files: FileItem[], sortMode: SortMode): FileItem[] {
   return [...files].sort((a, b) => {
     if (sortMode === "name") return a.name.localeCompare(b.name, "ko");
@@ -1070,6 +1294,100 @@ function sortFiles(files: FileItem[], sortMode: SortMode): FileItem[] {
     if (sortMode === "size") return a.size - b.size;
     return a.dropIndex - b.dropIndex;
   });
+}
+
+function getPlannedConversionEntries(
+  files: FileItem[],
+  sortMode: SortMode,
+  convertMode: ConvertMode,
+  batchConversionType: ConversionType | undefined,
+  individualTargets: Record<string, ConversionType>
+): PlannedConversionEntry[] {
+  const sorted = sortFiles(files, sortMode);
+  if (convertMode === "batch") {
+    return sorted.map((file) => ({ file, conversionType: batchConversionType }));
+  }
+  return sorted.map((file) => ({
+    file,
+    conversionType: individualTargets[file.id] || file.supportedConversions[0]
+  }));
+}
+
+function buildConversionPreflightItems(
+  entries: PlannedConversionEntry[],
+  dependencyStatus?: DependencyStatus
+): PreflightNoticeItem[] {
+  const planned = entries.filter((entry) => Boolean(entry.conversionType));
+  if (planned.length === 0) return [];
+
+  const items: PreflightNoticeItem[] = [];
+  const videoEntries = planned.filter(
+    (entry) =>
+      entry.file.kind === "video" &&
+      entry.conversionType &&
+      VIDEO_ESTIMATE_CONVERSIONS.has(entry.conversionType)
+  );
+  if (videoEntries.length > 0) {
+    const totalBytes = videoEntries.reduce((sum, entry) => sum + entry.file.size, 0);
+    const hasTranscode = videoEntries.some(
+      (entry) => entry.conversionType && entry.conversionType !== "mp4_to_mp3"
+    );
+    items.push({
+      tone: "info",
+      title: "대용량 영상 예상 시간",
+      message: `대상 영상 ${videoEntries.length}개, 총 ${formatBytes(totalBytes)}입니다. 예상 소요 시간은 약 ${estimateVideoConversionTime(totalBytes, hasTranscode)}이며 PC 성능, 원본 코덱, 저장 장치 속도에 따라 달라질 수 있습니다.`
+    });
+  }
+
+  const needsLibreOffice = planned.some(
+    (entry) => entry.conversionType && LIBRE_OFFICE_CONVERSIONS.has(entry.conversionType)
+  );
+  if (needsLibreOffice) {
+    const libreOffice = dependencyStatus?.libreOffice;
+    items.push(
+      libreOffice?.available
+        ? {
+            tone: "success",
+            title: "LibreOffice 확인됨",
+            message: `Office 문서 변환에 사용할 LibreOffice를 찾았습니다.${libreOffice.path ? ` 경로: ${libreOffice.path}` : ""}`
+          }
+        : {
+            tone: "error",
+            title: "LibreOffice 필요",
+            message:
+              "DOCX/XLSX/PPTX 변환에는 LibreOffice가 필요합니다. 시작 전에 우측 상단 옵션에서 soffice.exe 또는 soffice.com 경로를 지정해주세요."
+          }
+    );
+  }
+
+  const usesHeicInput = planned.some((entry) => [".heic", ".heif"].includes(entry.file.extension));
+  if (usesHeicInput) {
+    items.push({
+      tone: "info",
+      title: "HEIC 입력 지원",
+      message:
+        "HEIC/HEIF 입력은 JPG 또는 PNG로 변환할 수 있습니다. JPG/PNG를 HEIC로 저장하는 출력 기능은 제공하지 않습니다."
+    });
+  }
+
+  items.push({
+    tone: "info",
+    title: "원본 보호와 출력 충돌 처리",
+    message:
+      "원본 파일은 직접 수정하지 않고 새 출력 파일만 만듭니다. 같은 이름의 결과가 있으면 _001, _002를 붙여 저장하고, 실패하거나 취소된 불완전 출력은 자동 정리합니다."
+  });
+
+  return items;
+}
+
+function estimateVideoConversionTime(totalBytes: number, hasTranscode: boolean): string {
+  const totalMb = Math.max(1, totalBytes / 1024 / 1024);
+  const mbPerMinute = hasTranscode ? 350 : 900;
+  const low = Math.max(1, Math.ceil(totalMb / mbPerMinute));
+  const high = Math.max(low, Math.ceil(low * 1.7));
+  if (low <= 1 && high <= 2) return "1-2분";
+  if (low === high) return `${low}분`;
+  return `${low}-${high}분`;
 }
 
 async function extractDroppedPaths(dataTransfer: DataTransfer | null): Promise<string[]> {
@@ -1084,6 +1402,12 @@ function isExternalFileDrag(event: DragEvent): boolean {
   const types = Array.from(event.dataTransfer?.types || []);
   if (types.includes(INTERNAL_FILE_DRAG_TYPE) || types.includes(INTERNAL_PAGE_DRAG_TYPE)) return false;
   return types.includes("Files");
+}
+
+function isEditablePasteTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
 function getParentDir(filePath: string): string {

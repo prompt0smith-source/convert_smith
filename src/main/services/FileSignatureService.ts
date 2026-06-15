@@ -32,6 +32,13 @@ export class FileSignatureService {
     return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
   }
 
+  async isHeif(filePath: string): Promise<boolean> {
+    const bytes = await this.readBytes(filePath, 64);
+    if (bytes.length < 12 || bytes.subarray(4, 8).toString("ascii") !== "ftyp") return false;
+    const brands = bytes.subarray(8).toString("ascii");
+    return ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].some((brand) => brands.includes(brand));
+  }
+
   async isZip(filePath: string): Promise<boolean> {
     const bytes = await this.readBytes(filePath, 4);
     return bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);

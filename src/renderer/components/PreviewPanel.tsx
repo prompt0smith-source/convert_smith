@@ -71,7 +71,7 @@ export function PreviewPanel({
 
   if (!selectedFile) {
     return (
-      <section className="flex min-h-0 flex-1 flex-col bg-stone-50">
+      <section className="app-preview-panel flex min-h-0 flex-1 flex-col bg-stone-50">
         <PreviewHeader title="미리보기" />
         <div className="flex flex-1 items-center justify-center p-6">
           <div className="rounded-md border border-dashed border-stone-300 bg-white px-6 py-10 text-center">
@@ -88,7 +88,7 @@ export function PreviewPanel({
   const canRotatePdf = selectedFile.extension === ".pdf" && Boolean(onRotatePdfPreview);
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-stone-50">
+    <section className="app-preview-panel flex min-h-0 flex-1 flex-col bg-stone-50">
       <PreviewHeader
         title="미리보기"
         subtitle={`${selectedFile.name} · ${formatBytes(selectedFile.size)}${

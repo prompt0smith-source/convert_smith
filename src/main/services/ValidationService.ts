@@ -10,6 +10,7 @@ const SUPPORTED_INPUTS: Record<ConversionType, string[]> = {
   images_to_pdf: [".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".bmp"],
   pdf_to_images: [".pdf"],
   heic_to_jpg: [".heic", ".heif"],
+  heic_to_png: [".heic", ".heif"],
   png_to_jpg: [".png"],
   jpg_to_png: [".jpg", ".jpeg"],
   image_to_webp: [".jpg", ".jpeg", ".png"],

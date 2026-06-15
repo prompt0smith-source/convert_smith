@@ -1,10 +1,12 @@
 {
   "name": "convert-smith",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Local-first Electron file conversion app that creates genuinely usable output formats.",
   "main": "dist-electron/main/main.js",
   "type": "module",
   "private": true,
+  "author": "JINKYU YOO",
+  "copyright": "Copyright © 2026 JINKYU YOO",
   "scripts": {
     "start": "npm run build && node scripts/start-electron.mjs",
     "dev": "npm run electron:dev",
@@ -46,6 +48,7 @@
   "build": {
     "appId": "com.convertsmith.app",
     "productName": "Convert Smith",
+    "copyright": "Copyright © 2026 JINKYU YOO",
     "icon": "icon",
     "directories": {
       "output": "release"
@@ -54,6 +57,7 @@
       "dist/**/*",
       "dist-electron/**/*",
       "THIRD_PARTY_NOTICES.md",
+      "legal/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -64,6 +68,10 @@
       {
         "from": "THIRD_PARTY_NOTICES.md",
         "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "legal",
+        "to": "legal"
       }
     ],
     "asarUnpack": [
@@ -75,7 +83,18 @@
       "node_modules/@napi-rs/**"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "Convert Smith Setup ${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Convert Smith",
+      "license": "legal/INSTALLER_EULA.txt"
     },
     "mac": {
       "target": "dmg"

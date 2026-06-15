@@ -9,6 +9,8 @@ const api: ConvertSmithApi = {
       .filter((filePath): filePath is string => Boolean(filePath)),
   resolveDroppedFiles: (paths: string[], dropIndexOffset?: number) =>
     ipcRenderer.invoke("files:resolveDropped", paths, dropIndexOffset),
+  resolveClipboardFiles: (dropIndexOffset?: number, includeTextPaths?: boolean) =>
+    ipcRenderer.invoke("files:resolveClipboard", dropIndexOffset, includeTextPaths),
   selectFiles: () => ipcRenderer.invoke("dialog:selectFiles"),
   selectOutputDirectory: () => ipcRenderer.invoke("dialog:selectOutputDirectory"),
   selectLibreOfficePath: () => ipcRenderer.invoke("dialog:selectLibreOfficePath"),
@@ -30,6 +32,7 @@ const api: ConvertSmithApi = {
   showMainFromFloating: () => ipcRenderer.invoke("floating:showMain"),
   moveFloating: (x: number, y: number) => ipcRenderer.invoke("floating:move", x, y),
   getAppIconDataUrl: () => ipcRenderer.invoke("app:getIconDataUrl"),
+  quitApp: () => ipcRenderer.invoke("app:quit"),
   onJobUpdate: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, job: unknown) => {
       listener(job as never);

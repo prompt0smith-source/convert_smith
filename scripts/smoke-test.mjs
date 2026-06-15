@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -74,6 +74,73 @@ page.drawText("Convert Smith PDF Preview", {
 await writeFile(pdfInput, await pdfDoc.save());
 const pdfPreview = await service.getFilePreview(pdfInput);
 assertPreview("PDF preview", pdfPreview);
+
+const readingOrderPdfInput = path.join(root, "reading-order.pdf");
+const readingOrderPdf = await PDFDocument.create();
+const readingOrderPage = readingOrderPdf.addPage([360, 220]);
+readingOrderPage.drawText("RIGHT", { x: 190, y: 130, size: 16, font });
+readingOrderPage.drawText("LEFT", { x: 36, y: 130, size: 16, font });
+readingOrderPage.drawText("BOTTOM", { x: 36, y: 80, size: 16, font });
+await writeFile(readingOrderPdfInput, await readingOrderPdf.save());
+
+const readingOrderJob = await service.convert(
+  {
+    sourcePaths: [readingOrderPdfInput],
+    outputDir: root,
+    conversionType: "pdf_to_docx",
+    options: { ...options, pdfToDocxMode: "editable_text" }
+  },
+  () => undefined
+);
+assertSuccess("PDF -> DOCX reading order", readingOrderJob);
+const readingOrderText = await readDocxText(readingOrderJob.outputPaths[0]);
+assertTextOrder("PDF -> DOCX reading order", readingOrderText, ["LEFT", "RIGHT", "BOTTOM"]);
+
+const layeredPdfInput = path.join(root, "layered-text-image.pdf");
+const layeredPdf = await PDFDocument.create();
+const layeredPage = layeredPdf.addPage([360, 220]);
+const embeddedPng = await layeredPdf.embedPng(await readFile(pngInput));
+layeredPage.drawImage(embeddedPng, { x: 36, y: 82, width: 64, height: 64 });
+layeredPage.drawText("SELECTABLE TEXT", {
+  x: 120,
+  y: 112,
+  size: 16,
+  font,
+  color: rgb(0, 0, 0)
+});
+layeredPage.drawText("GREEN", {
+  x: 120,
+  y: 88,
+  size: 16,
+  font,
+  color: rgb(56 / 255, 166 / 255, 40 / 255)
+});
+await writeFile(layeredPdfInput, await layeredPdf.save());
+
+const layeredJob = await service.convert(
+  {
+    sourcePaths: [layeredPdfInput],
+    outputDir: root,
+    conversionType: "pdf_to_docx",
+    options: { ...options, pdfToDocxMode: "visual_preservation" }
+  },
+  () => undefined
+);
+assertSuccess("PDF -> DOCX text/image separation", layeredJob);
+const layeredXml = await readDocxXml(layeredJob.outputPaths[0]);
+if (!readDocxTextFromXml(layeredXml).includes("SELECTABLE TEXT")) {
+  throw new Error("PDF -> DOCX text/image separation did not keep selectable text.");
+}
+if ((layeredXml.match(/r:embed=/g) || []).length < 1) {
+  throw new Error("PDF -> DOCX text/image separation did not keep PDF image objects.");
+}
+if (layeredXml.includes("w:vanish")) {
+  throw new Error("PDF -> DOCX text/image separation created hidden text instead of visible text.");
+}
+if (!layeredXml.includes('w:val="38A628"')) {
+  throw new Error("PDF -> DOCX text/image separation did not keep PDF text color.");
+}
+assertDocxFonts("PDF -> DOCX local font matching", layeredXml);
 
 const pdfInputTwo = path.join(root, "sample-two.pdf");
 const pdfDocTwo = await PDFDocument.create();
@@ -172,6 +239,8 @@ assertSuccess("WEBM -> MP4", webmJob);
 console.log("Smoke test passed");
 console.log(`PNG -> JPG: ${pngJob.outputPaths[0]}`);
 console.log(`PNG -> WEBP: ${webpJob.outputPaths[0]}`);
+console.log(`PDF -> DOCX reading order: ${readingOrderJob.outputPaths[0]}`);
+console.log(`PDF -> DOCX text/image separation: ${layeredJob.outputPaths[0]}`);
 console.log(`PDF merge: ${mergeJob.outputPaths[0]}`);
 console.log(`PDF split files: ${splitJob.outputPaths.length}`);
 console.log(`MP4 -> MP3: ${mp3Job.outputPaths[0]}`);
@@ -195,6 +264,58 @@ function assertPreview(label, preview) {
   }
 }
 
+function assertTextOrder(label, text, orderedNeedles) {
+  let previousIndex = -1;
+  for (const needle of orderedNeedles) {
+    const index = text.indexOf(needle);
+    if (index <= previousIndex) {
+      throw new Error(`${label} produced wrong text order. Expected ${orderedNeedles.join(" -> ")}, got: ${text}`);
+    }
+    previousIndex = index;
+  }
+}
+
+async function readDocxText(docxPath) {
+  const xml = await readDocxXml(docxPath);
+  return readDocxTextFromXml(xml);
+}
+
+async function readDocxXml(docxPath) {
+  return read("tar", ["-xOf", docxPath, "word/document.xml"]);
+}
+
+function readDocxTextFromXml(xml) {
+  return [...xml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)]
+    .map((match) => decodeXml(match[1]))
+    .join("\n");
+}
+
+function assertDocxFonts(label, xml) {
+  const fontElements = [...xml.matchAll(/<w:rFonts\b[^>]*>/g)].map((match) => match[0]);
+  if (fontElements.length < 1) {
+    throw new Error(`${label} did not write DOCX run font information.`);
+  }
+
+  const fontNames = new Set(
+    [...xml.matchAll(/w:(?:ascii|hAnsi|eastAsia|cs)="([^"]+)"/g)].map((match) => match[1])
+  );
+  if (fontNames.size < 1) {
+    throw new Error(`${label} wrote empty DOCX run font information.`);
+  }
+  if (fontNames.has("sans-serif")) {
+    throw new Error(`${label} kept a generic PDF.js font family instead of a local/fallback font.`);
+  }
+}
+
+function decodeXml(value) {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 function run(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { shell: false, windowsHide: true });
@@ -205,6 +326,25 @@ function run(command, args) {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve();
+      else reject(new Error(`${command} failed with code ${code}: ${stderr.slice(-2000)}`));
+    });
+  });
+}
+
+function read(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { shell: false, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(stdout);
       else reject(new Error(`${command} failed with code ${code}: ${stderr.slice(-2000)}`));
     });
   });

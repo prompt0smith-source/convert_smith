@@ -1,6 +1,7 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import os from "node:os";
-import { access, mkdtemp, readdir, copyFile, rm } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
 type ProgressCallback = (progress: number, message: string) => void;
@@ -59,9 +60,19 @@ export class OfficeEngine {
 
     try {
       const executablePath = await this.resolveLibreOfficeExecutable(sofficePath);
+      const profileDir = path.join(tempDir, "profile");
+      await mkdir(profileDir, { recursive: true });
       await this.runLibreOffice(
         executablePath,
-        ["--headless", "--convert-to", convertTo, "--outdir", tempDir, inputPath],
+        [
+          `-env:UserInstallation=${pathToFileURL(profileDir).toString()}`,
+          "--headless",
+          "--convert-to",
+          convertTo,
+          "--outdir",
+          tempDir,
+          inputPath
+        ],
         runningMessage,
         onProgress,
         signal
@@ -106,10 +117,27 @@ export class OfficeEngine {
       });
       let stderr = "";
       let stdout = "";
+      let settled = false;
+      let timeout: NodeJS.Timeout;
+
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve();
+      };
+
       const abort = () => {
         child.kill("SIGTERM");
-        reject(new Error("변환이 취소되었습니다."));
+        finish(new Error("변환이 취소되었습니다."));
       };
+
+      timeout = setTimeout(() => {
+        child.kill("SIGTERM");
+        finish(new Error("LibreOffice 변환 시간이 초과되었습니다. LibreOffice가 응답하지 않습니다."));
+      }, 60000);
 
       signal?.addEventListener("abort", abort, { once: true });
       onProgress(35, runningMessage);
@@ -121,16 +149,14 @@ export class OfficeEngine {
         stderr += chunk.toString("utf8");
       });
       child.on("error", (error) => {
-        signal?.removeEventListener("abort", abort);
-        reject(error);
+        finish(error);
       });
       child.on("close", (code) => {
-        signal?.removeEventListener("abort", abort);
         if (code === 0) {
           onProgress(80, "LibreOffice 변환이 완료되었습니다.");
-          resolve();
+          finish();
         } else {
-          reject(new Error(`LibreOffice 변환 실패(code ${code}): ${(stderr || stdout).slice(-2000)}`));
+          finish(new Error(`LibreOffice 변환 실패(code ${code}): ${(stderr || stdout).slice(-2000)}`));
         }
       });
     });

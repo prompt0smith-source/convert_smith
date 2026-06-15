@@ -1,4 +1,7 @@
-import { ipcMain, dialog, shell, BrowserWindow } from "electron";
+import { ipcMain, dialog, shell, BrowserWindow, clipboard, app } from "electron";
+import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import type { ConversionJob, StartConversionPayload } from "../types/conversion.js";
 import { ConversionService } from "../services/ConversionService.js";
 import { DependencyService } from "../services/DependencyService.js";
@@ -47,6 +50,17 @@ export function registerConversionHandlers(service: ConversionService): void {
       throw new Error("파일 목록이 올바르지 않습니다.");
     }
     const offset = typeof dropIndexOffset === "number" && Number.isFinite(dropIndexOffset) ? dropIndexOffset : 0;
+    return service.resolveDroppedFiles(paths, offset);
+  });
+
+  ipcMain.handle("files:resolveClipboard", async (_event, dropIndexOffset: unknown, includeTextPaths: unknown) => {
+    const offset = typeof dropIndexOffset === "number" && Number.isFinite(dropIndexOffset) ? dropIndexOffset : 0;
+    const paths = readClipboardFilePaths(includeTextPaths !== false);
+    if (paths.length === 0) {
+      const imagePath = await writeClipboardImageIfAvailable();
+      if (imagePath) paths.push(imagePath);
+    }
+    if (paths.length === 0) return [];
     return service.resolveDroppedFiles(paths, offset);
   });
 
@@ -165,4 +179,104 @@ export function registerConversionHandlers(service: ConversionService): void {
   ipcMain.handle("window:focus", async (event) => {
     BrowserWindow.fromWebContents(event.sender)?.focus();
   });
+
+  ipcMain.handle("app:quit", async () => {
+    setImmediate(() => app.quit());
+    return true;
+  });
+}
+
+function readClipboardFilePaths(includeTextPaths = true): string[] {
+  const candidates = new Set<string>();
+
+  for (const filePath of readNullSeparatedUtf16Clipboard("FileNameW")) {
+    candidates.add(filePath);
+  }
+  for (const filePath of readNullSeparatedAnsiClipboard("FileName")) {
+    candidates.add(filePath);
+  }
+  if (includeTextPaths) {
+    for (const filePath of readPathsFromTextClipboard()) {
+      candidates.add(filePath);
+    }
+  }
+
+  return [...candidates].filter((filePath) => typeof filePath === "string" && filePath.trim() && !filePath.includes("\0"));
+}
+
+function readNullSeparatedUtf16Clipboard(format: string): string[] {
+  try {
+    const buffer = clipboard.readBuffer(format);
+    if (!buffer || buffer.length === 0) return [];
+    return buffer
+      .toString("utf16le")
+      .split("\0")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function readNullSeparatedAnsiClipboard(format: string): string[] {
+  try {
+    const buffer = clipboard.readBuffer(format);
+    if (!buffer || buffer.length === 0) return [];
+    return buffer
+      .toString("latin1")
+      .split("\0")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function readPathsFromTextClipboard(): string[] {
+  const text = clipboard.readText().trim();
+  if (!text) return [];
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^["']|["']$/g, ""))
+    .map((line) => {
+      if (/^file:\/\//i.test(line)) {
+        try {
+          return path.normalize(decodeURIComponent(new URL(line).pathname.replace(/^\/([A-Za-z]:)/, "$1")));
+        } catch {
+          return "";
+        }
+      }
+      return line;
+    })
+    .filter((line) => path.isAbsolute(line));
+}
+
+async function writeClipboardImageIfAvailable(): Promise<string | null> {
+  const image = clipboard.readImage();
+  if (image.isEmpty()) return null;
+
+  const png = image.toPNG();
+  if (png.length === 0) return null;
+
+  const outputDir = path.join(app.getPath("userData"), "clipboard-images");
+  await mkdir(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, `clipboard_screenshot_${formatTimestamp(new Date())}_${randomUUID().slice(0, 8)}.png`);
+  await writeFile(outputPath, png);
+  return outputPath;
+}
+
+function formatTimestamp(date: Date): string {
+  const pad = (value: number, length = 2) => String(value).padStart(length, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    "_",
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+    "_",
+    pad(date.getMilliseconds(), 3)
+  ].join("");
 }
