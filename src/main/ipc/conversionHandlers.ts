@@ -83,6 +83,22 @@ export function registerConversionHandlers(service: ConversionService, pathAcces
     return items;
   });
 
+  ipcMain.handle("dialog:selectSignatureImage", async () => {
+    const result = await dialog.showOpenDialog({
+      title: "서명 이미지 선택",
+      properties: ["openFile"],
+      filters: [
+        { name: "PNG 또는 JPG 이미지", extensions: ["png", "jpg", "jpeg"] },
+        { name: "모든 파일", extensions: ["*"] }
+      ]
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const items = await service.resolveDroppedFiles([result.filePaths[0]], 0);
+    const item = items[0] || null;
+    if (item) pathAccess.registerPath(item.path);
+    return item;
+  });
+
   ipcMain.handle("dialog:selectOutputDirectory", async () => {
     const result = await dialog.showOpenDialog({
       title: "저장할 폴더 선택",

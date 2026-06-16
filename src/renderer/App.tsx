@@ -8,6 +8,7 @@ import type {
   DependencyStatus,
   FileItem,
   PdfRotation,
+  PdfSignatureStampOptions,
   PdfSplitGroup,
   PdfToolJob,
   PdfToolType,
@@ -16,6 +17,7 @@ import type {
   StartPdfToolPayload,
   WorkMode
 } from "../main/types/conversion";
+import type { ContextMenuStatus } from "../main/types/contextMenu";
 import { DropZone } from "./components/DropZone";
 import { ConversionTypeSelector } from "./components/ConversionTypeSelector";
 import { OutputSettings } from "./components/OutputSettings";
@@ -133,6 +135,7 @@ export function App(): JSX.Element {
   const [pdfPageOrder, setPdfPageOrder] = useState<number[]>([]);
   const [pdfPageRotations, setPdfPageRotations] = useState<Record<number, PdfRotation>>({});
   const [pdfSplitGroups, setPdfSplitGroups] = useState<PdfSplitGroup[]>([]);
+  const [pdfSignatureStamp, setPdfSignatureStamp] = useState<PdfSignatureStampOptions>();
   const [outputDir, setOutputDir] = useState<string | undefined>(rememberedOutputDir);
   const [useSourceFolder, setUseSourceFolder] = useState(() => {
     const stored = localStorage.getItem(USE_SOURCE_FOLDER_STORAGE_KEY);
@@ -155,6 +158,7 @@ export function App(): JSX.Element {
     return { ...DEFAULT_OPTIONS, libreOfficePath, useDatedSubfolder };
   });
   const [dependencyStatus, setDependencyStatus] = useState<DependencyStatus>();
+  const [contextMenuStatus, setContextMenuStatus] = useState<ContextMenuStatus>();
   const [isDragging, setIsDragging] = useState(false);
   const [isConverting, setIsConverting] = useState(false);
   const [notice, setNotice] = useState<string>();
@@ -349,6 +353,13 @@ export function App(): JSX.Element {
       .catch((error: unknown) => setNotice(practicalError(error)));
   }, [options.libreOfficePath]);
 
+  const refreshContextMenuStatus = useCallback(() => {
+    window.convertSmith
+      .getContextMenuStatus()
+      .then(setContextMenuStatus)
+      .catch((error: unknown) => setNotice(practicalError(error)));
+  }, []);
+
   useEffect(() => {
     const unsubscribe = window.convertSmith.onJobUpdate(upsertJob);
     return unsubscribe;
@@ -362,6 +373,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     refreshDependencies();
   }, [refreshDependencies]);
+
+  useEffect(() => {
+    refreshContextMenuStatus();
+  }, [refreshContextMenuStatus]);
 
   useEffect(() => {
     window.convertSmith
@@ -533,6 +548,36 @@ export function App(): JSX.Element {
     [addFileItems, files.length]
   );
 
+  const handleLaunchPaths = useCallback(
+    async (paths: string[]) => {
+      const launchPaths = paths.filter((item) => typeof item === "string" && item.trim());
+      if (launchPaths.length === 0) return;
+      changeWorkMode("convert");
+      setConvertMode("batch");
+      await resolvePaths(launchPaths);
+      setNotice("탐색기에서 선택한 파일을 불러왔습니다. 변환 형식을 확인한 뒤 시작해주세요.");
+    },
+    [changeWorkMode, resolvePaths]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    window.convertSmith
+      .getLaunchFiles()
+      .then((paths) => {
+        if (!cancelled) void handleLaunchPaths(paths);
+      })
+      .catch((error: unknown) => setNotice(practicalError(error)));
+
+    const unsubscribe = window.convertSmith.onLaunchFiles((paths) => {
+      void handleLaunchPaths(paths).catch((error: unknown) => setNotice(practicalError(error)));
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [handleLaunchPaths]);
+
   useEffect(() => {
     let dragDepth = 0;
 
@@ -649,6 +694,26 @@ export function App(): JSX.Element {
   const openLibreOfficeDownload = async () => {
     const result = await window.convertSmith.openLibreOfficeDownloadPage();
     if (!result.ok) setNotice(result.message);
+  };
+
+  const installContextMenu = async () => {
+    try {
+      const status = await window.convertSmith.installContextMenu();
+      setContextMenuStatus(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(practicalError(error));
+    }
+  };
+
+  const uninstallContextMenu = async () => {
+    try {
+      const status = await window.convertSmith.uninstallContextMenu();
+      setContextMenuStatus(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(practicalError(error));
+    }
   };
 
   const changeFloatingEnabled = async (value: boolean) => {
@@ -787,6 +852,7 @@ export function App(): JSX.Element {
         pageOrder: pdfPageOrder,
         pageRotations: pdfPageRotations,
         splitGroups: pdfSplitGroups,
+        signatureStamp: pdfToolType === "pdf_signature_stamp" ? pdfSignatureStamp : undefined,
         useDatedSubfolder: options.useDatedSubfolder
       }
     };
@@ -954,6 +1020,7 @@ export function App(): JSX.Element {
               dependencyStatus={dependencyStatus}
               jobs={jobs}
               libreOfficePath={options.libreOfficePath}
+              contextMenuStatus={contextMenuStatus}
               darkMode={darkMode}
               floatingEnabled={floatingEnabled}
               onToggle={() => setIsUtilityOpen((value) => !value)}
@@ -961,6 +1028,8 @@ export function App(): JSX.Element {
               onRefreshDependencies={refreshDependencies}
               onPickLibreOfficePath={pickLibreOfficePath}
               onOpenLibreOfficeDownload={openLibreOfficeDownload}
+              onInstallContextMenu={installContextMenu}
+              onUninstallContextMenu={uninstallContextMenu}
               onDarkModeChange={setDarkMode}
               onFloatingEnabledChange={changeFloatingEnabled}
               onCancelJob={(jobId) => void window.convertSmith.cancelConversion(jobId)}
@@ -1063,6 +1132,7 @@ export function App(): JSX.Element {
               pageOrder={pdfPageOrder}
               pageRotations={pdfPageRotations}
               splitGroups={pdfSplitGroups}
+              signatureStamp={pdfSignatureStamp}
               pdfToolJobs={pdfToolJobs}
               onSelectFile={(item) => setSelectedFileId(item.id)}
               onToolTypeChange={setPdfToolType}
@@ -1070,6 +1140,7 @@ export function App(): JSX.Element {
               onPageOrderChange={setPdfPageOrder}
               onPageRotationsChange={setPdfPageRotations}
               onSplitGroupsChange={setPdfSplitGroups}
+              onSignatureStampChange={setPdfSignatureStamp}
               onPickOutputDir={pickOutputDir}
               onUseSourceFolderChange={changeUseSourceFolder}
               onUseDatedSubfolderChange={(value) => setOptions((current) => ({ ...current, useDatedSubfolder: value }))}

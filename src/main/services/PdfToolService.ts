@@ -5,6 +5,7 @@ import type {
   PdfDocumentInfo,
   PdfRotation,
   ConversionResultReport,
+  PdfSignatureStampOptions,
   PdfToolJob,
   PdfToolOptions,
   StartPdfToolPayload
@@ -13,6 +14,7 @@ import { DependencyService } from "./DependencyService.js";
 import { FileSignatureService } from "./FileSignatureService.js";
 import { ValidationService } from "./ValidationService.js";
 import { PdfToolEngine } from "../engines/PdfToolEngine.js";
+import { PdfSignatureStampEngine } from "../engines/PdfSignatureStampEngine.js";
 
 type JobUpdateCallback = (job: PdfToolJob) => void;
 
@@ -21,6 +23,7 @@ export class PdfToolService {
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly engine = new PdfToolEngine();
+  private readonly signatureStampEngine = new PdfSignatureStampEngine();
 
   async getInfo(filePath: string): Promise<PdfDocumentInfo> {
     const resolved = await this.validatePdfInput(filePath);
@@ -40,6 +43,9 @@ export class PdfToolService {
     }
     if (payload.toolType !== "pdf_merge" && sourcePaths.length !== 1) {
       throw new Error("이 PDF 작업은 PDF 파일 하나를 선택해야 합니다.");
+    }
+    if (payload.toolType === "pdf_signature_stamp") {
+      options.signatureStamp = await this.validateSignatureStampOptions(options.signatureStamp, sourcePaths[0]);
     }
 
     const job: PdfToolJob = {
@@ -89,6 +95,7 @@ export class PdfToolService {
 
       const rotations = options.pageRotations || {};
       let outputPaths: string[];
+      const toolWarnings: string[] = [];
 
       if (payload.toolType === "pdf_merge") {
         const outputPath = await createNamedOutputPath(options.outputName || "merged_pdf", "pdf");
@@ -124,6 +131,16 @@ export class PdfToolService {
           rotations,
           (progress, message) => emit({ progress, message })
         );
+      } else if (payload.toolType === "pdf_signature_stamp") {
+        const outputPath = await createOutputPath(sourcePaths[0], "signed");
+        const result = await this.signatureStampEngine.stamp(
+          sourcePaths[0],
+          outputPath,
+          options.signatureStamp!,
+          (progress, message) => emit({ progress, message })
+        );
+        outputPaths = result.outputPaths;
+        toolWarnings.push(...result.warnings);
       } else {
         const outputPath = await createOutputPath(sourcePaths[0], "rotated");
         outputPaths = await this.engine.rotatePdf(
@@ -147,9 +164,18 @@ export class PdfToolService {
       emit({
         status: "success",
         progress: 100,
-        message: "PDF 작업과 검증이 완료되었습니다.",
+        message:
+          toolWarnings.length > 0
+            ? `PDF 작업과 검증이 완료되었습니다. ${toolWarnings[0]}`
+            : "PDF 작업과 검증이 완료되었습니다.",
         outputPaths,
-        resultReport: await this.buildResultReport(sourcePaths, outputPaths, job.createdAt, true, validationMessages),
+        resultReport: await this.buildResultReport(
+          sourcePaths,
+          outputPaths,
+          job.createdAt,
+          true,
+          [...validationMessages, ...toolWarnings]
+        ),
         completedAt: Date.now()
       });
     } catch (error) {
@@ -190,6 +216,59 @@ export class PdfToolService {
       if (rotation === 90 || rotation === 180 || rotation === 270) result[page] = rotation;
     }
     return result;
+  }
+
+  private async validateSignatureStampOptions(
+    options: PdfSignatureStampOptions | undefined,
+    sourcePath: string
+  ): Promise<PdfSignatureStampOptions> {
+    if (!options) {
+      throw new Error("서명 이미지를 선택해주세요.");
+    }
+
+    const signatureImagePath = await this.validation.validateInputPath(options.signatureImagePath);
+    const extension = path.extname(signatureImagePath).toLowerCase();
+    if (![".png", ".jpg", ".jpeg"].includes(extension)) {
+      throw new Error("PNG 또는 JPG 서명 이미지만 사용할 수 있습니다.");
+    }
+    const validSignature =
+      extension === ".png"
+        ? await this.signatures.isPng(signatureImagePath)
+        : await this.signatures.isJpeg(signatureImagePath);
+    if (!validSignature) {
+      throw new Error("PNG 또는 JPG 서명 이미지만 사용할 수 있습니다.");
+    }
+
+    const info = await this.engine.getInfo(sourcePath);
+    const pages = [...new Set(options.pages.map((page) => Math.trunc(Number(page))))];
+    if (pages.length === 0) {
+      throw new Error("서명을 넣을 페이지를 선택해주세요.");
+    }
+    if (pages.some((page) => page < 1 || page > info.pageCount)) {
+      throw new Error("선택한 페이지 범위가 PDF 페이지 수를 벗어났습니다.");
+    }
+    if (
+      !Number.isFinite(options.placement.xPercent) ||
+      !Number.isFinite(options.placement.yPercent) ||
+      !Number.isFinite(options.placement.widthPercent) ||
+      (options.placement.heightPercent !== undefined && !Number.isFinite(options.placement.heightPercent))
+    ) {
+      throw new Error("서명 위치 값이 올바르지 않습니다.");
+    }
+
+    return {
+      ...options,
+      signatureImagePath,
+      pages,
+      opacity: Math.min(1, Math.max(0.1, options.opacity)),
+      flattenSignedPages: typeof options.flattenSignedPages === "boolean" ? options.flattenSignedPages : true,
+      renderScale: options.renderScale === 1 || options.renderScale === 3 ? options.renderScale : 2,
+      placement: {
+        ...options.placement,
+        keepAspectRatio:
+          typeof options.placement.keepAspectRatio === "boolean" ? options.placement.keepAspectRatio : true
+      }
+    };
   }
 
   private async createDatedOutputDir(outputDir: string): Promise<string> {

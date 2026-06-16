@@ -52,7 +52,8 @@ export type PdfToolType =
   | "pdf_reorder"
   | "pdf_split_all"
   | "pdf_split_groups"
-  | "pdf_rotate_pages";
+  | "pdf_rotate_pages"
+  | "pdf_signature_stamp";
 
 export type PdfRotation = 0 | 90 | 180 | 270;
 
@@ -60,6 +61,23 @@ export interface PdfSplitGroup {
   id: string;
   name: string;
   pages: number[];
+}
+
+export interface PdfSignatureStampPlacement {
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number;
+  heightPercent?: number;
+  keepAspectRatio: boolean;
+}
+
+export interface PdfSignatureStampOptions {
+  signatureImagePath: string;
+  pages: number[];
+  placement: PdfSignatureStampPlacement;
+  opacity: number;
+  flattenSignedPages: boolean;
+  renderScale: 1 | 2 | 3;
 }
 
 export interface ConversionOptions {
@@ -105,6 +123,7 @@ export interface PdfToolOptions {
   pageOrder?: number[];
   pageRotations?: Record<number, PdfRotation>;
   splitGroups?: PdfSplitGroup[];
+  signatureStamp?: PdfSignatureStampOptions;
   useDatedSubfolder?: boolean;
 }
 

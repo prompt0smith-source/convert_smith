@@ -243,6 +243,50 @@ if (splitJob.outputPaths.length !== 2) {
   throw new Error(`PDF split expected 2 files, got ${splitJob.outputPaths.length}`);
 }
 
+const signatureImageInput = path.join(root, "signature.png");
+await sharp({
+  create: {
+    width: 120,
+    height: 48,
+    channels: 4,
+    background: { r: 255, g: 255, b: 255, alpha: 0 }
+  }
+})
+  .composite([
+    {
+      input: Buffer.from(
+        `<svg width="120" height="48" xmlns="http://www.w3.org/2000/svg"><path d="M8 34 C28 4, 36 46, 58 20 S92 14, 112 28" fill="none" stroke="#087f5b" stroke-width="5" stroke-linecap="round"/></svg>`
+      )
+    }
+  ])
+  .png()
+  .toFile(signatureImageInput);
+const signatureJob = await pdfToolService.run(
+  {
+    sourcePaths: [pdfInput],
+    outputDir: root,
+    toolType: "pdf_signature_stamp",
+    options: {
+      outputName: "signed_smoke",
+      signatureStamp: {
+        signatureImagePath: signatureImageInput,
+        pages: [1],
+        placement: {
+          xPercent: 60,
+          yPercent: 70,
+          widthPercent: 25,
+          keepAspectRatio: true
+        },
+        opacity: 0.9,
+        flattenSignedPages: false,
+        renderScale: 2
+      }
+    }
+  },
+  () => undefined
+);
+assertSuccess("PDF signature stamp", signatureJob);
+
 const mp4Input = path.join(root, "sample.mp4");
 await run(ffmpegPath, [
   "-y",
@@ -311,6 +355,7 @@ console.log(`PDF -> DOCX reading order: ${readingOrderJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX text/image separation: ${layeredJob.outputPaths[0]}`);
 console.log(`PDF merge: ${mergeJob.outputPaths[0]}`);
 console.log(`PDF split files: ${splitJob.outputPaths.length}`);
+console.log(`PDF signature stamp: ${signatureJob.outputPaths[0]}`);
 console.log(`MP4 -> MP3: ${mp3Job.outputPaths[0]}`);
 console.log(`WEBM -> MP4: ${webmJob.outputPaths[0]}`);
 

@@ -12,6 +12,7 @@ const api: ConvertSmithApi = {
   resolveClipboardFiles: (dropIndexOffset?: number, includeTextPaths?: boolean) =>
     ipcRenderer.invoke("files:resolveClipboard", dropIndexOffset, includeTextPaths),
   selectFiles: () => ipcRenderer.invoke("dialog:selectFiles"),
+  selectSignatureImage: () => ipcRenderer.invoke("dialog:selectSignatureImage"),
   selectOutputDirectory: () => ipcRenderer.invoke("dialog:selectOutputDirectory"),
   selectLibreOfficePath: () => ipcRenderer.invoke("dialog:selectLibreOfficePath"),
   openLibreOfficeDownloadPage: () => ipcRenderer.invoke("external:openLibreOfficeDownload"),
@@ -32,6 +33,10 @@ const api: ConvertSmithApi = {
   showMainFromFloating: () => ipcRenderer.invoke("floating:showMain"),
   moveFloating: (x: number, y: number) => ipcRenderer.invoke("floating:move", x, y),
   getAppIconDataUrl: () => ipcRenderer.invoke("app:getIconDataUrl"),
+  getContextMenuStatus: () => ipcRenderer.invoke("contextMenu:getStatus"),
+  installContextMenu: () => ipcRenderer.invoke("contextMenu:install"),
+  uninstallContextMenu: () => ipcRenderer.invoke("contextMenu:uninstall"),
+  getLaunchFiles: () => ipcRenderer.invoke("app:getLaunchFiles"),
   quitApp: () => ipcRenderer.invoke("app:quit"),
   onJobUpdate: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, job: unknown) => {
@@ -46,6 +51,13 @@ const api: ConvertSmithApi = {
     };
     ipcRenderer.on("pdfTool:jobUpdated", wrapped);
     return () => ipcRenderer.removeListener("pdfTool:jobUpdated", wrapped);
+  },
+  onLaunchFiles: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, paths: unknown) => {
+      listener(Array.isArray(paths) ? paths.filter((item): item is string => typeof item === "string") : []);
+    };
+    ipcRenderer.on("app:launchFiles", wrapped);
+    return () => ipcRenderer.removeListener("app:launchFiles", wrapped);
   }
 };
 

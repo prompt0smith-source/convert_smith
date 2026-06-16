@@ -1,6 +1,7 @@
 import { Settings, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ConversionJob, DependencyStatus } from "../../main/types/conversion";
+import type { ContextMenuStatus } from "../../main/types/contextMenu";
 import { ConversionResultPanel } from "./ConversionResultPanel";
 import { DependencyStatusPanel } from "./DependencyStatusPanel";
 import { JobQueue } from "./JobQueue";
@@ -11,6 +12,7 @@ interface UtilityDrawerProps {
   dependencyStatus?: DependencyStatus;
   jobs: ConversionJob[];
   libreOfficePath?: string;
+  contextMenuStatus?: ContextMenuStatus;
   darkMode: boolean;
   floatingEnabled: boolean;
   onToggle: () => void;
@@ -18,6 +20,8 @@ interface UtilityDrawerProps {
   onRefreshDependencies: () => void;
   onPickLibreOfficePath: () => void;
   onOpenLibreOfficeDownload: () => void;
+  onInstallContextMenu: () => void;
+  onUninstallContextMenu: () => void;
   onDarkModeChange: (value: boolean) => void;
   onFloatingEnabledChange: (value: boolean) => void;
   onCancelJob: (jobId: string) => void;
@@ -30,6 +34,7 @@ export function UtilityDrawer({
   dependencyStatus,
   jobs,
   libreOfficePath,
+  contextMenuStatus,
   darkMode,
   floatingEnabled,
   onToggle,
@@ -37,6 +42,8 @@ export function UtilityDrawer({
   onRefreshDependencies,
   onPickLibreOfficePath,
   onOpenLibreOfficeDownload,
+  onInstallContextMenu,
+  onUninstallContextMenu,
   onDarkModeChange,
   onFloatingEnabledChange,
   onCancelJob,
@@ -130,10 +137,13 @@ export function UtilityDrawer({
               <DependencyStatusPanel status={dependencyStatus} onRefresh={onRefreshDependencies} />
               <SettingsPanel
                 libreOfficePath={libreOfficePath}
+                contextMenuStatus={contextMenuStatus}
                 darkMode={darkMode}
                 floatingEnabled={floatingEnabled}
                 onPickLibreOfficePath={onPickLibreOfficePath}
                 onOpenLibreOfficeDownload={onOpenLibreOfficeDownload}
+                onInstallContextMenu={onInstallContextMenu}
+                onUninstallContextMenu={onUninstallContextMenu}
                 onDarkModeChange={onDarkModeChange}
                 onFloatingEnabledChange={onFloatingEnabledChange}
               />

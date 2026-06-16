@@ -75,7 +75,8 @@ export const pdfToolLabels: Record<PdfToolType, string> = {
   pdf_reorder: "PDF 페이지 정렬",
   pdf_split_all: "PDF 전체 분할",
   pdf_split_groups: "PDF 선택 그룹 분할",
-  pdf_rotate_pages: "PDF 페이지 회전"
+  pdf_rotate_pages: "PDF 페이지 회전",
+  pdf_signature_stamp: "서명 스탬프 추가"
 };
 
 export const pdfToolDescriptions: Record<PdfToolType, string> = {
@@ -83,7 +84,9 @@ export const pdfToolDescriptions: Record<PdfToolType, string> = {
   pdf_reorder: "선택한 PDF의 페이지 순서를 바꿔 새 PDF로 저장합니다.",
   pdf_split_all: "선택한 PDF를 페이지마다 개별 PDF로 나눕니다.",
   pdf_split_groups: "원하는 페이지 묶음별로 PDF를 나눠 저장합니다.",
-  pdf_rotate_pages: "선택한 PDF 페이지의 회전 상태를 적용한 새 PDF로 저장합니다."
+  pdf_rotate_pages: "선택한 PDF 페이지의 회전 상태를 적용한 새 PDF로 저장합니다.",
+  pdf_signature_stamp:
+    "서명 이미지를 PDF에 시각적으로 삽입합니다. 인증서 기반의 법적 디지털 서명은 아닙니다."
 };
 
 export function getCommonConversions(items: FileItem[]): ConversionType[] {

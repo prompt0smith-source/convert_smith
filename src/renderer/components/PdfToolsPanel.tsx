@@ -1,15 +1,17 @@
-import { Copy, ExternalLink, FolderOpen, GripVertical, Layers, Plus, Scissors, Shuffle, Trash2 } from "lucide-react";
+import { Copy, ExternalLink, FolderOpen, GripVertical, Layers, PenLine, Plus, Scissors, Shuffle, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { DragEvent } from "react";
 import type {
   FileItem,
   PdfDocumentInfo,
   PdfRotation,
+  PdfSignatureStampOptions,
   PdfSplitGroup,
   PdfToolJob,
   PdfToolType
 } from "../../main/types/conversion";
 import { formatBytes, pdfToolDescriptions, pdfToolLabels } from "../lib/formatLabels";
+import { PdfSignatureStampPanel } from "./PdfSignatureStampPanel";
 
 interface PdfToolsPanelProps {
   displayFiles: FileItem[];
@@ -23,6 +25,7 @@ interface PdfToolsPanelProps {
   pageOrder: number[];
   pageRotations: Record<number, PdfRotation>;
   splitGroups: PdfSplitGroup[];
+  signatureStamp?: PdfSignatureStampOptions;
   pdfToolJobs: PdfToolJob[];
   onSelectFile: (item: FileItem) => void;
   onToolTypeChange: (type: PdfToolType) => void;
@@ -30,6 +33,7 @@ interface PdfToolsPanelProps {
   onPageOrderChange: (pages: number[]) => void;
   onPageRotationsChange: (rotations: Record<number, PdfRotation>) => void;
   onSplitGroupsChange: (groups: PdfSplitGroup[]) => void;
+  onSignatureStampChange: (options?: PdfSignatureStampOptions) => void;
   onPickOutputDir: () => void;
   onUseSourceFolderChange: (value: boolean) => void;
   onUseDatedSubfolderChange: (value: boolean) => void;
@@ -43,7 +47,8 @@ const TOOL_TYPES: PdfToolType[] = [
   "pdf_merge",
   "pdf_reorder",
   "pdf_split_all",
-  "pdf_split_groups"
+  "pdf_split_groups",
+  "pdf_signature_stamp"
 ];
 
 const INTERNAL_PAGE_DRAG_TYPE = "application/x-convert-smith-page";
@@ -76,6 +81,7 @@ export function PdfToolsPanel({
   pageOrder,
   pageRotations,
   splitGroups,
+  signatureStamp,
   pdfToolJobs,
   onSelectFile,
   onToolTypeChange,
@@ -83,6 +89,7 @@ export function PdfToolsPanel({
   onPageOrderChange,
   onPageRotationsChange,
   onSplitGroupsChange,
+  onSignatureStampChange,
   onPickOutputDir,
   onUseSourceFolderChange,
   onUseDatedSubfolderChange,
@@ -302,7 +309,13 @@ export function PdfToolsPanel({
               ].join(" ")}
             >
               <span className="font-medium">{pdfToolLabels[type]}</span>
-              {type === "pdf_split_all" || type === "pdf_split_groups" ? <Scissors size={16} /> : <Shuffle size={16} />}
+              {type === "pdf_signature_stamp" ? (
+                <PenLine size={16} />
+              ) : type === "pdf_split_all" || type === "pdf_split_groups" ? (
+                <Scissors size={16} />
+              ) : (
+                <Shuffle size={16} />
+              )}
             </button>
           ))}
         </div>
@@ -372,6 +385,18 @@ export function PdfToolsPanel({
           </label>
         </div>
       </div>
+
+      {selectedPdf && toolType === "pdf_signature_stamp" && (
+        <PdfSignatureStampPanel
+          selectedPdf={selectedPdf}
+          info={info}
+          selectedPage={selectedPage}
+          options={signatureStamp}
+          onOptionsChange={onSignatureStampChange}
+          onPagePreviewChange={onPagePreviewChange}
+          onNotice={onNotice}
+        />
+      )}
 
       {selectedPdf && toolType === "pdf_merge" && (
         <div className="border-b border-stone-200 p-4">

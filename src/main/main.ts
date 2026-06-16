@@ -1,8 +1,10 @@
 import path from "node:path";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import { registerConversionHandlers } from "./ipc/conversionHandlers.js";
+import { registerContextMenuHandlers } from "./ipc/contextMenuHandlers.js";
 import { registerFloatingHandlers } from "./ipc/floatingHandlers.js";
 import { registerPdfToolHandlers } from "./ipc/pdfToolHandlers.js";
+import { ContextMenuService } from "./services/ContextMenuService.js";
 import { ConversionService } from "./services/ConversionService.js";
 import { FloatingWindowService } from "./services/FloatingWindowService.js";
 import { PathAccessRegistry } from "./services/PathAccessRegistry.js";
@@ -10,8 +12,11 @@ import { PdfToolService } from "./services/PdfToolService.js";
 
 const conversionService = new ConversionService();
 const pdfToolService = new PdfToolService();
+const contextMenuService = new ContextMenuService();
 const pathAccessRegistry = new PathAccessRegistry();
 let floatingService: FloatingWindowService | undefined;
+let mainWindow: BrowserWindow | undefined;
+const pendingLaunchPaths: string[] = collectOpenFileArgs(process.argv);
 
 function getAppIconPath(): string {
   if (app.isPackaged) {
@@ -24,7 +29,7 @@ function getAppIconPath(): string {
 function createWindow(): BrowserWindow {
   const iconPath = getAppIconPath();
   const preloadPath = path.join(__dirname, "../preload/preload.cjs");
-  const mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 760,
@@ -44,10 +49,10 @@ function createWindow(): BrowserWindow {
     floatingService = new FloatingWindowService(preloadPath, iconPath);
     registerFloatingHandlers(floatingService);
   }
-  floatingService.attachMainWindow(mainWindow);
+  floatingService.attachMainWindow(window);
 
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  mainWindow.webContents.on("will-navigate", (event, url) => {
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, url) => {
     const isDevUrl = url.startsWith("http://127.0.0.1:5173/");
     const isFileUrl = url.startsWith("file://");
     if (!isDevUrl && !isFileUrl) {
@@ -57,28 +62,74 @@ function createWindow(): BrowserWindow {
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
-    void mainWindow.loadURL(devServerUrl);
+    void window.loadURL(devServerUrl);
   } else {
-    void mainWindow.loadFile(path.join(__dirname, "../../dist/index.html"));
+    void window.loadFile(path.join(__dirname, "../../dist/index.html"));
   }
 
-  return mainWindow;
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = undefined;
+  });
+  mainWindow = window;
+  return window;
 }
 
-app.whenReady().then(() => {
-  registerConversionHandlers(conversionService, pathAccessRegistry);
-  registerPdfToolHandlers(pdfToolService, pathAccessRegistry);
-  createWindow();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, argv) => {
+    const launchPaths = collectOpenFileArgs(argv);
+    if (launchPaths.length > 0) {
+      pendingLaunchPaths.push(...launchPaths);
+      if (mainWindow) sendLaunchFiles(drainPendingLaunchPaths());
+    }
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
     }
   });
-});
+
+  app.whenReady().then(() => {
+    registerConversionHandlers(conversionService, pathAccessRegistry);
+    registerPdfToolHandlers(pdfToolService, pathAccessRegistry);
+    registerContextMenuHandlers(contextMenuService);
+    ipcMain.handle("app:getLaunchFiles", () => drainPendingLaunchPaths());
+    createWindow();
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
 });
+
+function collectOpenFileArgs(argv: string[]): string[] {
+  const paths: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--open") continue;
+    const filePath = argv[index + 1];
+    if (filePath && !filePath.includes("\0")) {
+      paths.push(filePath);
+      index += 1;
+    }
+  }
+  return paths;
+}
+
+function drainPendingLaunchPaths(): string[] {
+  return pendingLaunchPaths.splice(0, pendingLaunchPaths.length);
+}
+
+function sendLaunchFiles(paths: string[]): void {
+  if (paths.length === 0 || !mainWindow || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send("app:launchFiles", paths);
+}

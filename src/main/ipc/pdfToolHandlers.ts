@@ -16,6 +16,12 @@ export function registerPdfToolHandlers(service: PdfToolService, pathAccess: Pat
 
   ipcMain.handle("pdfTool:start", async (event, payload: StartPdfToolPayload) => {
     const normalizedPayload = payloadValidation.normalizePdfToolPayload(payload);
+    normalizedPayload.sourcePaths = normalizedPayload.sourcePaths.map((sourcePath) => pathAccess.assertAllowed(sourcePath));
+    if (normalizedPayload.options.signatureStamp?.signatureImagePath) {
+      normalizedPayload.options.signatureStamp.signatureImagePath = pathAccess.assertAllowed(
+        normalizedPayload.options.signatureStamp.signatureImagePath
+      );
+    }
     const job = await service.run(normalizedPayload, (job: PdfToolJob) => {
       if (!event.sender.isDestroyed()) {
         event.sender.send("pdfTool:jobUpdated", job);

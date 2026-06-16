@@ -9,12 +9,14 @@ import type {
   StartPdfToolPayload,
   VideoInspection
 } from "../main/types/conversion.js";
+import type { ContextMenuStatus } from "../main/types/contextMenu.js";
 
 export interface ConvertSmithApi {
   getDroppedFilePaths(files: File[]): string[];
   resolveDroppedFiles(paths: string[], dropIndexOffset?: number): Promise<FileItem[]>;
   resolveClipboardFiles(dropIndexOffset?: number, includeTextPaths?: boolean): Promise<FileItem[]>;
   selectFiles(): Promise<FileItem[]>;
+  selectSignatureImage(): Promise<FileItem | null>;
   selectOutputDirectory(): Promise<string | null>;
   selectLibreOfficePath(): Promise<string | null>;
   openLibreOfficeDownloadPage(): Promise<{ ok: boolean; message: string }>;
@@ -33,7 +35,12 @@ export interface ConvertSmithApi {
   showMainFromFloating(): Promise<boolean>;
   moveFloating(x: number, y: number): Promise<boolean>;
   getAppIconDataUrl(): Promise<string>;
+  getContextMenuStatus(): Promise<ContextMenuStatus>;
+  installContextMenu(): Promise<ContextMenuStatus>;
+  uninstallContextMenu(): Promise<ContextMenuStatus>;
+  getLaunchFiles(): Promise<string[]>;
   quitApp(): Promise<boolean>;
   onJobUpdate(listener: (job: ConversionJob) => void): () => void;
   onPdfToolUpdate(listener: (job: PdfToolJob) => void): () => void;
+  onLaunchFiles(listener: (paths: string[]) => void): () => void;
 }

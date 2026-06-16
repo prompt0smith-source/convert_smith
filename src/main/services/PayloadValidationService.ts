@@ -51,7 +51,8 @@ const PDF_TOOL_TYPES: readonly PdfToolType[] = [
   "pdf_reorder",
   "pdf_split_all",
   "pdf_split_groups",
-  "pdf_rotate_pages"
+  "pdf_rotate_pages",
+  "pdf_signature_stamp"
 ];
 
 const PDF_IMAGE_FORMATS: readonly PdfImageFormat[] = ["jpg", "png"];
@@ -100,12 +101,16 @@ export class PayloadValidationService {
     const sourcePaths = normalizePathArray(raw.sourcePaths, "PDF 파일", MAX_SOURCE_PATHS);
     const outputDir = normalizePath(raw.outputDir, "저장 폴더 경로가 올바르지 않습니다.");
     const toolType = normalizeEnum(raw.toolType, PDF_TOOL_TYPES, "지원하지 않는 PDF 작업입니다.");
+    const options = normalizePdfToolOptions(raw.options);
+    if (toolType === "pdf_signature_stamp" && !options.signatureStamp) {
+      throw new Error("서명 이미지를 선택해주세요.");
+    }
 
     return {
       sourcePaths,
       outputDir,
       toolType,
-      options: normalizePdfToolOptions(raw.options)
+      options
     };
   }
 }
@@ -140,7 +145,42 @@ function normalizePdfToolOptions(value: unknown): PdfToolOptions {
     pageOrder: normalizeIntegerArray(raw.pageOrder, "페이지 순서", MAX_PAGE_ITEMS),
     pageRotations: normalizePageRotations(raw.pageRotations),
     splitGroups: normalizeSplitGroups(raw.splitGroups),
+    signatureStamp: normalizeSignatureStamp(raw.signatureStamp),
     useDatedSubfolder: Boolean(raw.useDatedSubfolder)
+  };
+}
+
+function normalizeSignatureStamp(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  const raw = requirePlainObject(value, "서명 스탬프 옵션이 올바르지 않습니다.");
+  const signatureImagePath = normalizePath(raw.signatureImagePath, "서명 이미지를 선택해주세요.");
+  const extension = signatureImagePath.split(".").pop()?.toLowerCase();
+  if (!extension || !["png", "jpg", "jpeg"].includes(extension)) {
+    throw new Error("PNG 또는 JPG 서명 이미지만 사용할 수 있습니다.");
+  }
+  const pages = normalizeIntegerArray(raw.pages, "서명 페이지", MAX_PAGE_ITEMS);
+  if (!pages || pages.length === 0) {
+    throw new Error("서명을 넣을 페이지를 선택해주세요.");
+  }
+  const placementRaw = requirePlainObject(raw.placement, "서명 위치 값이 올바르지 않습니다.");
+  const keepAspectRatio =
+    typeof placementRaw.keepAspectRatio === "boolean" ? placementRaw.keepAspectRatio : true;
+  return {
+    signatureImagePath,
+    pages,
+    placement: {
+      xPercent: clampNumber(placementRaw.xPercent, 0, 100, "서명 위치 값이 올바르지 않습니다."),
+      yPercent: clampNumber(placementRaw.yPercent, 0, 100, "서명 위치 값이 올바르지 않습니다."),
+      widthPercent: clampNumber(placementRaw.widthPercent, 1, 100, "서명 위치 값이 올바르지 않습니다."),
+      heightPercent:
+        placementRaw.heightPercent === undefined || placementRaw.heightPercent === null
+          ? undefined
+          : clampNumber(placementRaw.heightPercent, 1, 100, "서명 위치 값이 올바르지 않습니다."),
+      keepAspectRatio
+    },
+    opacity: clampNumber(raw.opacity, 0.1, 1, "서명 투명도 값이 올바르지 않습니다."),
+    flattenSignedPages: typeof raw.flattenSignedPages === "boolean" ? raw.flattenSignedPages : true,
+    renderScale: normalizeEnum(raw.renderScale, [1, 2, 3] as const, "서명 페이지 이미지화 배율이 올바르지 않습니다.", 2)
   };
 }
 
@@ -224,6 +264,14 @@ function clampInteger(value: unknown, min: number, max: number, fallback: number
   const numberValue = Number(value);
   if (!Number.isInteger(numberValue) || !Number.isFinite(numberValue)) return fallback;
   return Math.min(max, Math.max(min, numberValue));
+}
+
+function clampNumber(value: unknown, min: number, max: number, message: string): number {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < min || numberValue > max) {
+    throw new Error(message);
+  }
+  return numberValue;
 }
 
 function normalizeEnum<T extends string | number>(

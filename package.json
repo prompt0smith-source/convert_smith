@@ -1,6 +1,6 @@
 {
   "name": "convert-smith",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Local-first Electron file conversion app that creates genuinely usable output formats.",
   "main": "dist-electron/main/main.js",
   "type": "module",
