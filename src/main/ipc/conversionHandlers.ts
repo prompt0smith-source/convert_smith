@@ -1,4 +1,5 @@
 import { ipcMain, dialog, shell, BrowserWindow, clipboard, app } from "electron";
+import type { IpcMainInvokeEvent, OpenDialogOptions, OpenDialogReturnValue } from "electron";
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -44,6 +45,16 @@ const OPEN_FILE_FILTERS = [
   { name: "모든 파일", extensions: ["*"] }
 ];
 
+function showOpenDialogForSender(
+  event: IpcMainInvokeEvent,
+  options: OpenDialogOptions
+): Promise<OpenDialogReturnValue> {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  return parent && !parent.isDestroyed()
+    ? dialog.showOpenDialog(parent, options)
+    : dialog.showOpenDialog(options);
+}
+
 export function registerConversionHandlers(service: ConversionService, pathAccess: PathAccessRegistry): void {
   const dependencies = new DependencyService();
   const payloadValidation = new PayloadValidationService();
@@ -71,8 +82,8 @@ export function registerConversionHandlers(service: ConversionService, pathAcces
     return items;
   });
 
-  ipcMain.handle("dialog:selectFiles", async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle("dialog:selectFiles", async (event) => {
+    const result = await showOpenDialogForSender(event, {
       title: "변환할 파일 선택",
       properties: ["openFile", "multiSelections"],
       filters: OPEN_FILE_FILTERS
@@ -83,8 +94,8 @@ export function registerConversionHandlers(service: ConversionService, pathAcces
     return items;
   });
 
-  ipcMain.handle("dialog:selectSignatureImage", async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle("dialog:selectSignatureImage", async (event) => {
+    const result = await showOpenDialogForSender(event, {
       title: "서명 이미지 선택",
       properties: ["openFile"],
       filters: [
@@ -99,16 +110,16 @@ export function registerConversionHandlers(service: ConversionService, pathAcces
     return item;
   });
 
-  ipcMain.handle("dialog:selectOutputDirectory", async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle("dialog:selectOutputDirectory", async (event) => {
+    const result = await showOpenDialogForSender(event, {
       title: "저장할 폴더 선택",
       properties: ["openDirectory", "createDirectory"]
     });
     return result.canceled ? null : result.filePaths[0];
   });
 
-  ipcMain.handle("dialog:selectLibreOfficePath", async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle("dialog:selectLibreOfficePath", async (event) => {
+    const result = await showOpenDialogForSender(event, {
       title: "LibreOffice soffice 실행 파일 선택",
       properties: ["openFile"],
       filters: [

@@ -85,6 +85,8 @@ export class PdfToolService {
         ));
       const createRawNamedOutputPath = async (baseName: string, extension: string) =>
         trackOutputPath(await this.createUniqueOutputPath(targetOutputDir, baseName, extension, false));
+      const createNumberedOutputPath = async (baseName: string, extension: string) =>
+        trackOutputPath(await this.createNumberedOutputPath(targetOutputDir, baseName, extension));
       const createOutputPath = async (sourcePath: string, suffix: string) =>
         trackOutputPath(await this.createUniqueOutputPath(
           targetOutputDir,
@@ -98,7 +100,9 @@ export class PdfToolService {
       const toolWarnings: string[] = [];
 
       if (payload.toolType === "pdf_merge") {
-        const outputPath = await createNamedOutputPath(options.outputName || "merged_pdf", "pdf");
+        const outputPath = customOutputName
+          ? await createRawNamedOutputPath(customOutputName, "pdf")
+          : await createNumberedOutputPath("merged", "pdf");
         outputPaths = await this.engine.mergePdfs(sourcePaths, outputPath, (progress, message) => emit({ progress, message }));
       } else if (payload.toolType === "pdf_reorder") {
         const outputPath = await createOutputPath(sourcePaths[0], "reordered");
@@ -316,7 +320,19 @@ export class PdfToolService {
   private applyCustomNameToGeneratedBase(customBaseName: string, generatedBaseName: string): string {
     const pageSuffix = generatedBaseName.match(/_page_\d+$/i)?.[0];
     if (pageSuffix) return `${customBaseName}${pageSuffix}`;
+    const numberedSuffix = generatedBaseName.match(/\(\d+\)$/)?.[0];
+    if (numberedSuffix) return `${customBaseName}${numberedSuffix}`;
     return customBaseName;
+  }
+
+  private async createNumberedOutputPath(outputDir: string, rawBaseName: string, extension: string): Promise<string> {
+    const safeBaseName = this.sanitizeBaseName(rawBaseName);
+    const normalizedExtension = extension.startsWith(".") ? extension : `.${extension}`;
+    for (let index = 1; index < 10000; index += 1) {
+      const candidate = path.join(outputDir, `${safeBaseName}(${index})${normalizedExtension}`);
+      if (!(await this.exists(candidate))) return candidate;
+    }
+    return this.createUniqueOutputPath(outputDir, safeBaseName, extension, false);
   }
 
   private async exists(filePath: string): Promise<boolean> {

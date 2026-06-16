@@ -1,7 +1,8 @@
 import { ImagePlus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { FileItem, PdfDocumentInfo, PdfSignatureStampOptions } from "../../main/types/conversion";
+import type { PointerEvent as ReactPointerEvent, SyntheticEvent } from "react";
+import type { FileItem, FilePreview, PdfDocumentInfo, PdfSignatureStampOptions } from "../../main/types/conversion";
 
 type PageMode = "current" | "all" | "custom";
 
@@ -22,6 +23,8 @@ const DEFAULT_PLACEMENT = {
   keepAspectRatio: true
 };
 
+type StampDragMode = "move" | "resize";
+
 export function PdfSignatureStampPanel({
   selectedPdf,
   info,
@@ -33,6 +36,18 @@ export function PdfSignatureStampPanel({
 }: PdfSignatureStampPanelProps): JSX.Element {
   const [pageMode, setPageMode] = useState<PageMode>("current");
   const [customPages, setCustomPages] = useState("");
+  const [signaturePreview, setSignaturePreview] = useState<FilePreview>();
+  const [pagePreview, setPagePreview] = useState<FilePreview>();
+  const [signatureRatio, setSignatureRatio] = useState(2.5);
+  const [pageRatio, setPageRatio] = useState(0.75);
+  const [isDraggingStamp, setIsDraggingStamp] = useState(false);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const stampDragRef = useRef<{
+    mode: StampDragMode;
+    pointerX: number;
+    pointerY: number;
+    placement: PdfSignatureStampOptions["placement"];
+  } | null>(null);
   const pageCount = Math.max(1, info?.pageCount || 1);
   const disabled = !options;
 
@@ -40,6 +55,44 @@ export function PdfSignatureStampPanel({
     if (!options || pageMode !== "current") return;
     onOptionsChange({ ...options, pages: [selectedPage] });
   }, [selectedPage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSignaturePreview(undefined);
+    if (!options?.signatureImagePath) return undefined;
+
+    window.convertSmith
+      .getFilePreview(options.signatureImagePath)
+      .then((preview) => {
+        if (!cancelled) setSignaturePreview(preview);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) onNotice(error instanceof Error ? error.message : "서명 이미지 미리보기를 만들지 못했습니다.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onNotice, options?.signatureImagePath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPagePreview(undefined);
+    setPageRatio(0.75);
+
+    window.convertSmith
+      .getFilePreview(selectedPdf.path, selectedPage)
+      .then((preview) => {
+        if (!cancelled) setPagePreview(preview);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) onNotice(error instanceof Error ? error.message : "선택한 PDF 페이지 미리보기를 만들지 못했습니다.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onNotice, selectedPage, selectedPdf.path]);
 
   const selectSignatureImage = async () => {
     try {
@@ -96,9 +149,71 @@ export function PdfSignatureStampPanel({
     if (parsed[0]) onPagePreviewChange(parsed[0]);
   };
 
-  const previewHeight = options?.placement.keepAspectRatio
-    ? Math.max(8, options.placement.widthPercent * 0.35)
-    : options?.placement.heightPercent || 12;
+  const getPreviewHeight = (placement = options?.placement) => {
+    if (!placement) return 12;
+    if (!placement.keepAspectRatio && placement.heightPercent) return placement.heightPercent;
+    return clampPercentInRange((placement.widthPercent * 0.75) / Math.max(0.1, signatureRatio), 3, 80);
+  };
+
+  const previewHeight = getPreviewHeight();
+
+  const commitPlacement = (placement: PdfSignatureStampOptions["placement"]) => {
+    if (!options) return;
+    updatePlacement(clampStampPlacement(placement, getPreviewHeight(placement)));
+  };
+
+  const beginStampDrag = (event: ReactPointerEvent<HTMLDivElement>, mode: StampDragMode) => {
+    if (!options || disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    stampDragRef.current = {
+      mode,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      placement: { ...options.placement }
+    };
+    setIsDraggingStamp(true);
+  };
+
+  const moveStampDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!options || !stampDragRef.current || !stageRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = stageRef.current.getBoundingClientRect();
+    const drag = stampDragRef.current;
+    const deltaXPercent = ((event.clientX - drag.pointerX) / Math.max(1, rect.width)) * 100;
+    const deltaYPercent = ((event.clientY - drag.pointerY) / Math.max(1, rect.height)) * 100;
+
+    if (drag.mode === "move") {
+      const nextPlacement = {
+        ...drag.placement,
+        xPercent: drag.placement.xPercent + deltaXPercent,
+        yPercent: drag.placement.yPercent + deltaYPercent
+      };
+      commitPlacement(nextPlacement);
+      return;
+    }
+
+    const nextWidth = clampPercentInRange(drag.placement.widthPercent + deltaXPercent, 3, 80);
+    const nextHeight = drag.placement.keepAspectRatio
+      ? drag.placement.heightPercent
+      : clampPercentInRange((drag.placement.heightPercent || getPreviewHeight(drag.placement)) + deltaYPercent, 3, 80);
+    commitPlacement({
+      ...drag.placement,
+      widthPercent: nextWidth,
+      heightPercent: nextHeight
+    });
+  };
+
+  const endStampDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    stampDragRef.current = null;
+    setIsDraggingStamp(false);
+  };
 
   return (
     <section className="border-b border-stone-200 bg-white p-4">
@@ -153,10 +268,101 @@ export function PdfSignatureStampPanel({
           )}
         </div>
 
+        <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold text-stone-600">서명 위치</p>
+            <p className="truncate text-[11px] text-stone-500">서명을 끌어서 이동하고 모서리로 크기를 조절하세요.</p>
+          </div>
+          <div
+            ref={stageRef}
+            className="relative mx-auto w-full max-w-[220px] overflow-hidden rounded-sm border border-stone-300 bg-white shadow-inner"
+            style={{ aspectRatio: String(pageRatio) }}
+          >
+            {pagePreview?.dataUrl ? (
+              <img
+                src={pagePreview.dataUrl}
+                alt={`${selectedPdf.name} ${selectedPage}페이지 미리보기`}
+                draggable={false}
+                onLoad={(event: SyntheticEvent<HTMLImageElement>) => {
+                  const image = event.currentTarget;
+                  if (image.naturalWidth && image.naturalHeight) {
+                    setPageRatio(image.naturalWidth / image.naturalHeight);
+                  }
+                }}
+                className="absolute inset-0 h-full w-full select-none object-fill"
+              />
+            ) : (
+              <div className="absolute inset-0 bg-[linear-gradient(#f5f5f4_1px,transparent_1px),linear-gradient(90deg,#f5f5f4_1px,transparent_1px)] bg-[size:18px_18px]" />
+            )}
+            <div className="pointer-events-none absolute left-2 top-2 rounded bg-white/85 px-2 py-1 text-[10px] font-semibold text-stone-600 shadow-sm">
+              {selectedPage}페이지
+            </div>
+            {!pagePreview?.dataUrl && options && (
+              <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs leading-5 text-stone-400">
+                선택한 페이지 미리보기를 준비하고 있습니다.
+              </div>
+            )}
+            {!options && (
+              <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs leading-5 text-stone-400">
+                서명 이미지를 먼저 선택하세요.
+              </div>
+            )}
+            {options && (
+              <div
+                role="button"
+                tabIndex={0}
+                onPointerDown={(event) => beginStampDrag(event, "move")}
+                onPointerMove={moveStampDrag}
+                onPointerUp={endStampDrag}
+                onPointerCancel={endStampDrag}
+                className={[
+                  "absolute overflow-hidden rounded border-2 border-emerald-500 bg-emerald-50/40 shadow-sm",
+                  isDraggingStamp ? "cursor-grabbing ring-2 ring-emerald-300 ring-offset-1" : "cursor-grab"
+                ].join(" ")}
+                style={{
+                  left: `${options.placement.xPercent}%`,
+                  top: `${options.placement.yPercent}%`,
+                  width: `${options.placement.widthPercent}%`,
+                  height: `${previewHeight}%`,
+                  opacity: Math.max(0.25, options.opacity)
+                }}
+                aria-label="서명 위치 조절"
+              >
+                {signaturePreview?.dataUrl ? (
+                  <img
+                    src={signaturePreview.dataUrl}
+                    alt="서명 미리보기"
+                    draggable={false}
+                    onLoad={(event: SyntheticEvent<HTMLImageElement>) => {
+                      const image = event.currentTarget;
+                      if (image.naturalWidth && image.naturalHeight) {
+                        setSignatureRatio(image.naturalWidth / image.naturalHeight);
+                      }
+                    }}
+                    className="h-full w-full object-contain"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] leading-4 text-emerald-800">
+                    미리보기
+                  </div>
+                )}
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onPointerDown={(event) => beginStampDrag(event, "resize")}
+                  onPointerMove={moveStampDrag}
+                  onPointerUp={endStampDrag}
+                  onPointerCancel={endStampDrag}
+                  className="absolute bottom-0 right-0 h-2 w-2 cursor-nwse-resize rounded-tl-sm bg-emerald-600 shadow-sm"
+                  aria-label="서명 크기 조절"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
-          <NumberControl label="X %" value={options?.placement.xPercent ?? 60} disabled={disabled} onChange={(value) => updatePlacement({ xPercent: value })} />
-          <NumberControl label="Y %" value={options?.placement.yPercent ?? 70} disabled={disabled} onChange={(value) => updatePlacement({ yPercent: value })} />
-          <RangeControl label="너비 %" min={1} max={80} value={options?.placement.widthPercent ?? 25} disabled={disabled} onChange={(value) => updatePlacement({ widthPercent: value })} />
+          <RangeControl label="너비 %" min={3} max={80} value={options?.placement.widthPercent ?? 25} disabled={disabled} onChange={(value) => commitPlacement({ ...(options?.placement || DEFAULT_PLACEMENT), widthPercent: value })} />
           <RangeControl label="투명도" min={10} max={100} value={Math.round((options?.opacity ?? 0.9) * 100)} disabled={disabled} onChange={(value) => update({ opacity: value / 100 })} />
         </div>
 
@@ -214,23 +420,6 @@ export function PdfSignatureStampPanel({
           </label>
         )}
 
-        <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-3">
-          <p className="mb-2 text-xs font-semibold text-stone-600">위치 미리보기</p>
-          <div className="relative mx-auto aspect-[3/4] w-full max-w-[180px] overflow-hidden rounded-sm border border-stone-300 bg-white">
-            {options && (
-              <div
-                className="absolute rounded border-2 border-emerald-500 bg-emerald-200/30"
-                style={{
-                  left: `${options.placement.xPercent}%`,
-                  top: `${options.placement.yPercent}%`,
-                  width: `${options.placement.widthPercent}%`,
-                  height: `${previewHeight}%`,
-                  opacity: Math.max(0.25, options.opacity)
-                }}
-              />
-            )}
-          </div>
-        </div>
       </div>
     </section>
   );
@@ -259,33 +448,6 @@ function PageModeButton({
     >
       {children}
     </button>
-  );
-}
-
-function NumberControl({
-  label,
-  value,
-  disabled,
-  onChange
-}: {
-  label: string;
-  value: number;
-  disabled: boolean;
-  onChange: (value: number) => void;
-}): JSX.Element {
-  return (
-    <label className="block text-xs font-semibold text-stone-700">
-      {label}
-      <input
-        type="number"
-        min={0}
-        max={100}
-        value={Math.round(value)}
-        disabled={disabled}
-        onChange={(event) => onChange(clampPercent(Number(event.target.value)))}
-        className="mt-1 h-9 w-full rounded-md border border-stone-300 px-2 text-sm disabled:bg-stone-100"
-      />
-    </label>
   );
 }
 
@@ -340,9 +502,24 @@ function parsePageRanges(value: string, pageCount: number): number[] | null {
   return pages.size > 0 ? [...pages] : null;
 }
 
-function clampPercent(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(100, Math.max(0, value));
+function clampStampPlacement(
+  placement: PdfSignatureStampOptions["placement"],
+  heightPercent: number
+): PdfSignatureStampOptions["placement"] {
+  const widthPercent = clampPercentInRange(placement.widthPercent, 3, 80);
+  const safeHeightPercent = clampPercentInRange(heightPercent, 3, 80);
+  return {
+    ...placement,
+    widthPercent,
+    heightPercent: placement.keepAspectRatio ? placement.heightPercent : safeHeightPercent,
+    xPercent: clampPercentInRange(placement.xPercent, 0, Math.max(0, 100 - widthPercent)),
+    yPercent: clampPercentInRange(placement.yPercent, 0, Math.max(0, 100 - safeHeightPercent))
+  };
+}
+
+function clampPercentInRange(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 function fileNameFromPath(filePath: string): string {

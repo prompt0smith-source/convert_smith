@@ -13,15 +13,24 @@ import {
   Trash2
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { DragEvent } from "react";
+import type { DragEvent, PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
 import type { FileItem, FileKind, SortMode } from "../../main/types/conversion";
 import { formatBytes } from "../lib/formatLabels";
+
+export interface FileSelectionModifiers {
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  preserveSelection?: boolean;
+}
 
 interface DropZoneProps {
   files: FileItem[];
   displayFiles: FileItem[];
   sortMode: SortMode;
   selectedFileId?: string;
+  selectedFileIds: string[];
   isDragging: boolean;
   clearFilesAfterSuccess: boolean;
   openFolderAfterSuccess: boolean;
@@ -33,12 +42,26 @@ interface DropZoneProps {
   onOpenFolderAfterSuccessChange: (value: boolean) => void;
   onOpenFileAfterSuccessChange: (value: boolean) => void;
   onOutputNameChange: (value: string) => void;
-  onSelectFile: (item: FileItem) => void;
+  onSelectFile: (item: FileItem, modifiers?: FileSelectionModifiers) => void;
   onRemoveFile: (id: string) => void;
   onReorderFiles: (orderedIds: string[]) => void;
 }
 
 const INTERNAL_FILE_DRAG_TYPE = "application/x-convert-smith-file-id";
+const POINTER_DRAG_THRESHOLD = 5;
+
+interface PointerDragSession {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  ids: string[];
+  dragging: boolean;
+}
+
+interface DragGhostPosition {
+  x: number;
+  y: number;
+}
 
 const sortLabels: Record<SortMode, string> = {
   basic: "Basic",
@@ -54,6 +77,7 @@ export function DropZone({
   displayFiles,
   sortMode,
   selectedFileId,
+  selectedFileIds,
   isDragging,
   clearFilesAfterSuccess,
   openFolderAfterSuccess,
@@ -69,29 +93,135 @@ export function DropZone({
   onRemoveFile,
   onReorderFiles
 }: DropZoneProps): JSX.Element {
-  const [draggedId, setDraggedId] = useState<string>();
+  const [draggedIds, setDraggedIds] = useState<string[]>([]);
   const [insertionIndex, setInsertionIndex] = useState<number | null>(null);
   const [isCompletionOptionsOpen, setIsCompletionOptionsOpen] = useState(false);
   const [isCompletionOptionsRendered, setIsCompletionOptionsRendered] = useState(false);
   const [isCompletionOptionsClosing, setIsCompletionOptionsClosing] = useState(false);
   const completionOptionsRef = useRef<HTMLDivElement>(null);
   const completionOptionsTimerRef = useRef<number>();
+  const listRef = useRef<HTMLDivElement>(null);
+  const pointerDragRef = useRef<PointerDragSession>();
+  const insertionIndexRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+  const [activePointerId, setActivePointerId] = useState<number | null>(null);
+  const [dragGhostPosition, setDragGhostPosition] = useState<DragGhostPosition | null>(null);
 
-  const draggedItem = draggedId ? displayFiles.find((item) => item.id === draggedId) : undefined;
-  const visibleFiles = draggedItem ? displayFiles.filter((item) => item.id !== draggedItem.id) : displayFiles;
+  const selectedIdSet = new Set(selectedFileIds);
+  const draggedIdSet = new Set(draggedIds);
+  const draggedItems = draggedIds.length > 0 ? displayFiles.filter((item) => draggedIdSet.has(item.id)) : [];
+  const visibleFiles = draggedItems.length > 0 ? displayFiles.filter((item) => !draggedIdSet.has(item.id)) : displayFiles;
   const placeholderIndex =
-    draggedItem !== undefined
-      ? clampIndex(insertionIndex ?? displayFiles.findIndex((item) => item.id === draggedItem.id), visibleFiles.length)
+    draggedItems.length > 0
+      ? getDropInsertionIndex(displayFiles, draggedIds, insertionIndex ?? getGroupInsertionIndex(displayFiles, draggedIds))
       : -1;
+
+  const clearInternalDrag = () => {
+    pointerDragRef.current = undefined;
+    insertionIndexRef.current = null;
+    setDraggedIds([]);
+    setInsertionIndex(null);
+    setActivePointerId(null);
+    setDragGhostPosition(null);
+  };
+
+  const updateInsertionIndex = (value: number | null) => {
+    insertionIndexRef.current = value;
+    setInsertionIndex(value);
+  };
+
+  const getPointerInsertionIndex = (clientY: number): number => {
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-file-row-id]") || []);
+    if (rows.length === 0) return displayFiles.length;
+
+    for (const row of rows) {
+      const id = row.dataset.fileRowId;
+      const index = displayFiles.findIndex((file) => file.id === id);
+      if (index < 0) continue;
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return index;
+    }
+
+    return displayFiles.length;
+  };
 
   const startInternalDrag = (event: DragEvent, item: FileItem) => {
     event.stopPropagation();
-    const originalIndex = displayFiles.findIndex((file) => file.id === item.id);
-    setDraggedId(item.id);
-    setInsertionIndex(originalIndex < 0 ? 0 : originalIndex);
+    const nextDraggedIds = selectedIdSet.has(item.id)
+      ? displayFiles.filter((file) => selectedIdSet.has(file.id)).map((file) => file.id)
+      : [item.id];
+
+    onSelectFile(item, selectedIdSet.has(item.id) ? { preserveSelection: true } : undefined);
+
+    setDraggedIds(nextDraggedIds);
+    setInsertionIndex(getGroupInsertionIndex(displayFiles, nextDraggedIds));
     event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(INTERNAL_FILE_DRAG_TYPE, item.id);
+    event.dataTransfer.setData(INTERNAL_FILE_DRAG_TYPE, JSON.stringify(nextDraggedIds));
     setTransparentDragImage(event);
+  };
+
+  const startPointerDrag = (event: ReactPointerEvent<HTMLElement>, item: FileItem) => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest("[data-no-row-drag]")) return;
+    event.preventDefault();
+
+    const nextDraggedIds = selectedIdSet.has(item.id)
+      ? displayFiles.filter((file) => selectedIdSet.has(file.id)).map((file) => file.id)
+      : [item.id];
+
+    onSelectFile(item, selectedIdSet.has(item.id) ? { preserveSelection: true } : undefined);
+    pointerDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      ids: nextDraggedIds,
+      dragging: false
+    };
+    setActivePointerId(event.pointerId);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const movePointerDrag = (event: Pick<PointerEvent, "pointerId" | "clientX" | "clientY" | "preventDefault">) => {
+    const session = pointerDragRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    const distance = Math.hypot(event.clientX - session.startX, event.clientY - session.startY);
+    if (!session.dragging && distance < POINTER_DRAG_THRESHOLD) return;
+
+    event.preventDefault();
+    if (!session.dragging) {
+      session.dragging = true;
+      suppressClickRef.current = true;
+      setDraggedIds(session.ids);
+    }
+    setDragGhostPosition({ x: event.clientX, y: event.clientY });
+    updateInsertionIndex(getPointerInsertionIndex(event.clientY));
+  };
+
+  const finishPointerDrag = (event?: Pick<PointerEvent, "pointerId" | "preventDefault">) => {
+    const session = pointerDragRef.current;
+    if (!session || (event && session.pointerId !== event.pointerId)) return;
+    if (session.dragging) {
+      event?.preventDefault();
+      const sourceIds = session.ids;
+      const sourceIdSet = new Set(sourceIds);
+      const movingItems = displayFiles.filter((item) => sourceIdSet.has(item.id));
+      const nextBase = displayFiles.filter((item) => !sourceIdSet.has(item.id));
+      const nextIndex = getDropInsertionIndex(displayFiles, sourceIds, insertionIndexRef.current ?? displayFiles.length);
+      if (movingItems.length > 0) {
+        const nextIds = nextBase.map((item) => item.id);
+        nextIds.splice(nextIndex, 0, ...movingItems.map((item) => item.id));
+        if (nextIds.join("\u0000") !== displayFiles.map((item) => item.id).join("\u0000")) {
+          onReorderFiles(nextIds);
+        }
+      }
+    }
+
+    clearInternalDrag();
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
   };
 
   const overListDrag = (event: DragEvent<HTMLDivElement>) => {
@@ -110,7 +240,7 @@ export function DropZone({
     if (event.clientY >= rect.bottom - 18) setInsertionIndex(visibleFiles.length);
   };
 
-  const overFileDrag = (event: DragEvent<HTMLButtonElement>, index: number) => {
+  const overFileDrag = (event: DragEvent<HTMLElement>, index: number) => {
     if (!hasInternalFileDrag(event)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -126,16 +256,17 @@ export function DropZone({
     event.preventDefault();
     event.stopPropagation();
 
-    const sourceId = event.dataTransfer.getData(INTERNAL_FILE_DRAG_TYPE) || draggedId;
-    const nextBase = displayFiles.filter((item) => item.id !== sourceId);
-    const nextIndex = clampIndex(insertionIndex ?? nextBase.length, nextBase.length);
-    setDraggedId(undefined);
-    setInsertionIndex(null);
+    const sourceIds = parseInternalDragIds(event.dataTransfer.getData(INTERNAL_FILE_DRAG_TYPE), draggedIds);
+    const sourceIdSet = new Set(sourceIds);
+    const movingItems = displayFiles.filter((item) => sourceIdSet.has(item.id));
+    const nextBase = displayFiles.filter((item) => !sourceIdSet.has(item.id));
+    const nextIndex = getDropInsertionIndex(displayFiles, sourceIds, insertionIndex ?? displayFiles.length);
+    clearInternalDrag();
 
-    if (!sourceId || !displayFiles.some((item) => item.id === sourceId)) return;
+    if (movingItems.length === 0) return;
 
     const nextIds = nextBase.map((item) => item.id);
-    nextIds.splice(nextIndex, 0, sourceId);
+    nextIds.splice(nextIndex, 0, ...movingItems.map((item) => item.id));
     if (nextIds.join("\u0000") !== displayFiles.map((item) => item.id).join("\u0000")) {
       onReorderFiles(nextIds);
     }
@@ -143,9 +274,63 @@ export function DropZone({
 
   const endInternalDrag = (event: DragEvent) => {
     event.stopPropagation();
-    setDraggedId(undefined);
-    setInsertionIndex(null);
+    clearInternalDrag();
   };
+
+  useEffect(() => {
+    if (draggedIds.length === 0) return undefined;
+
+    const clearSoon = () => window.setTimeout(clearInternalDrag, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearInternalDrag();
+    };
+
+    window.addEventListener("dragend", clearInternalDrag, true);
+    window.addEventListener("drop", clearSoon, true);
+    window.addEventListener("blur", clearInternalDrag);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("dragend", clearInternalDrag, true);
+      window.removeEventListener("drop", clearSoon, true);
+      window.removeEventListener("blur", clearInternalDrag);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [draggedIds.length]);
+
+  useEffect(() => {
+    if (activePointerId === null) return undefined;
+
+    const onPointerMove = (event: PointerEvent) => movePointerDrag(event);
+    const onPointerUp = (event: PointerEvent) => finishPointerDrag(event);
+    const onPointerCancel = (event: PointerEvent) => finishPointerDrag(event);
+    const onBlur = () => clearInternalDrag();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        suppressClickRef.current = false;
+        clearInternalDrag();
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp, { passive: false });
+    window.addEventListener("pointercancel", onPointerCancel, { passive: false });
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [activePointerId, displayFiles, selectedFileIds]);
+
+  useEffect(() => {
+    document.body.classList.toggle("convert-smith-grabbing", draggedItems.length > 0);
+    return () => {
+      document.body.classList.remove("convert-smith-grabbing");
+    };
+  }, [draggedItems.length]);
 
   const openCompletionOptions = () => {
     if (completionOptionsTimerRef.current) {
@@ -204,6 +389,9 @@ export function DropZone({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col border-r border-stone-200 bg-stone-50">
+      {dragGhostPosition &&
+        draggedItems.length > 0 &&
+        createPortal(<FileDragGhost items={draggedItems} position={dragGhostPosition} />, document.body)}
       <div
         className={[
           "m-4 rounded-md border border-dashed p-4 transition",
@@ -304,24 +492,29 @@ export function DropZone({
             변환할 파일을 드롭하세요.
           </div>
         ) : (
-          <div className="space-y-2 pb-1" onDragOver={overListDrag} onDrop={dropInternalDrag}>
+          <div ref={listRef} className="space-y-2 pb-1" onDragOver={overListDrag} onDrop={dropInternalDrag}>
             {visibleFiles.map((item, index) => (
               <FileListFragment
                 key={item.id}
                 item={item}
                 index={index}
-                draggedItem={draggedItem}
+                draggedItems={draggedItems}
                 placeholderIndex={placeholderIndex}
                 selectedFileId={selectedFileId}
-                onDragStart={startInternalDrag}
-                onDragOver={overFileDrag}
-                onDrop={dropInternalDrag}
-                onDragEnd={endInternalDrag}
+                selectedFileIds={selectedFileIds}
+                isDragSource={draggedIdSet.has(item.id)}
+                onPointerDown={startPointerDrag}
+                onPointerMove={movePointerDrag}
+                onPointerUp={finishPointerDrag}
+                onPointerCancel={finishPointerDrag}
+                shouldSuppressClick={() => suppressClickRef.current}
                 onSelectFile={onSelectFile}
                 onRemoveFile={onRemoveFile}
               />
             ))}
-            {draggedItem && placeholderIndex === visibleFiles.length && <FilePlaceholder item={draggedItem} />}
+            {draggedItems.length > 0 && placeholderIndex === visibleFiles.length && (
+              <FilePlaceholder items={draggedItems} />
+            )}
           </div>
         )}
       </div>
@@ -372,47 +565,78 @@ function CompletionOption({
 function FileListFragment({
   item,
   index,
-  draggedItem,
+  draggedItems,
   placeholderIndex,
   selectedFileId,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
+  selectedFileIds,
+  isDragSource,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  shouldSuppressClick,
   onSelectFile,
   onRemoveFile
 }: {
   item: FileItem;
   index: number;
-  draggedItem?: FileItem;
+  draggedItems: FileItem[];
   placeholderIndex: number;
   selectedFileId?: string;
-  onDragStart: (event: DragEvent, item: FileItem) => void;
-  onDragOver: (event: DragEvent<HTMLButtonElement>, index: number) => void;
-  onDrop: (event: DragEvent) => void;
-  onDragEnd: (event: DragEvent) => void;
-  onSelectFile: (item: FileItem) => void;
+  selectedFileIds: string[];
+  isDragSource: boolean;
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>, item: FileItem) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
+  shouldSuppressClick: () => boolean;
+  onSelectFile: (item: FileItem, modifiers?: FileSelectionModifiers) => void;
   onRemoveFile: (id: string) => void;
 }): JSX.Element {
   return (
     <>
-      {draggedItem && placeholderIndex === index && <FilePlaceholder item={draggedItem} />}
-      <button
-        type="button"
-        draggable
-        onDragStart={(event) => onDragStart(event, item)}
-        onDragOver={(event) => onDragOver(event, index)}
-        onDrop={onDrop}
-        onDragEnd={onDragEnd}
-        onClick={() => onSelectFile(item)}
+      {draggedItems.length > 0 && placeholderIndex === index && <FilePlaceholder items={draggedItems} />}
+      <div
+        role="button"
+        tabIndex={0}
+        data-file-row-id={item.id}
+        onPointerDown={(event) => onPointerDown(event, item)}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onClick={(event) => {
+          if (shouldSuppressClick()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+          onSelectFile(item, {
+            shiftKey: event.shiftKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey
+          });
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelectFile(item);
+          }
+        }}
         className={[
-          "dropzone-file-row grid w-full grid-cols-[18px_28px_1fr_auto] items-center gap-2 rounded-md border p-3 text-left transition",
-          selectedFileId === item.id
+          "dropzone-file-row grid w-full select-none grid-cols-[18px_28px_1fr_auto] items-center gap-2 rounded-md border p-3 text-left transition",
+          selectedFileIds.includes(item.id)
             ? "border-emerald-500 bg-emerald-50"
-            : "border-stone-200 bg-white hover:border-stone-300"
+            : "border-stone-200 bg-white hover:border-stone-300",
+          selectedFileId === item.id ? "ring-1 ring-emerald-200" : "",
+          isDragSource ? "opacity-45" : ""
         ].join(" ")}
       >
-        <GripVertical size={15} className="cursor-grab text-stone-400" />
+        <span
+          className="inline-flex h-8 w-5 cursor-grab items-center justify-center rounded text-stone-400 active:cursor-grabbing"
+          aria-label="파일 순서 이동"
+        >
+          <GripVertical size={15} />
+        </span>
         <FileKindIcon kind={item.kind} />
         <span className="min-w-0">
           <span className="block truncate text-sm font-medium text-stone-900">{item.name}</span>
@@ -423,6 +647,7 @@ function FileListFragment({
         <span
           role="button"
           tabIndex={0}
+          data-no-row-drag="true"
           onClick={(event) => {
             event.stopPropagation();
             onRemoveFile(item.id);
@@ -439,26 +664,57 @@ function FileListFragment({
         >
           <Trash2 size={16} />
         </span>
-      </button>
+      </div>
     </>
   );
 }
 
-function FilePlaceholder({ item }: { item: FileItem }): JSX.Element {
+function FilePlaceholder({ items }: { items: FileItem[] }): JSX.Element {
+  const item = items[0] as FileItem;
+  const countLabel = items.length > 1 ? `${items.length}개 항목 이동` : "여기로 이동";
   return (
     <div
-      className="dropzone-file-placeholder grid w-full grid-cols-[18px_28px_1fr_auto] items-center gap-2 rounded-md border border-emerald-400 bg-emerald-50/60 p-3 text-left text-emerald-950"
+      className="dropzone-file-placeholder grid w-full select-none grid-cols-[18px_28px_1fr_auto] items-center gap-2 rounded-md border border-emerald-500 bg-emerald-50 p-3 text-left text-stone-900 shadow-sm"
       aria-hidden="true"
     >
-      <GripVertical size={15} className="text-emerald-500/60" />
-      <FileKindIcon kind={item.kind} muted />
-      <span className="min-w-0 opacity-65">
+      <GripVertical size={15} className="text-emerald-500" />
+      <FileKindIcon kind={item.kind} />
+      <span className="min-w-0">
         <span className="block truncate text-sm font-medium">{item.name}</span>
-        <span className="mt-1 block truncate text-xs">
+        <span className="mt-1 block truncate text-xs text-stone-500">
           {item.extension || "unknown"} · {formatBytes(item.size)}
         </span>
       </span>
-      <span className="h-8 w-8" />
+      <span className="text-right text-xs font-semibold text-emerald-700">{items.length > 1 ? `${items.length}개` : ""}</span>
+    </div>
+  );
+}
+
+function FileDragGhost({
+  items,
+  position
+}: {
+  items: FileItem[];
+  position: DragGhostPosition;
+}): JSX.Element {
+  const item = items[0] as FileItem;
+  const countLabel = items.length > 1 ? `${items.length}개` : "";
+  return (
+    <div
+      className="convert-file-drag-ghost fixed z-[80] grid w-[260px] select-none grid-cols-[22px_1fr_auto] items-center gap-2 rounded-md border border-emerald-400 bg-white/92 px-3 py-2 text-left text-stone-900 shadow-xl backdrop-blur-sm"
+      style={{
+        transform: `translate3d(${position.x - 10}px, ${position.y - 10}px, 0)`
+      }}
+      aria-hidden="true"
+    >
+      <FileKindIcon kind={item.kind} />
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-semibold">{item.name}</span>
+        <span className="mt-0.5 block truncate text-[11px] text-stone-500">
+          {item.extension || "unknown"} 쨌 {formatBytes(item.size)}
+        </span>
+      </span>
+      <span className="text-xs font-semibold text-emerald-700">{countLabel}</span>
     </div>
   );
 }
@@ -480,6 +736,32 @@ function hasInternalFileDrag(event: DragEvent): boolean {
 function clampIndex(value: number, max: number): number {
   if (!Number.isFinite(value)) return max;
   return Math.min(Math.max(Math.trunc(value), 0), max);
+}
+
+function getGroupInsertionIndex(files: FileItem[], ids: string[]): number {
+  const idSet = new Set(ids);
+  const firstIndex = files.findIndex((item) => idSet.has(item.id));
+  if (firstIndex < 0) return files.length;
+  return files.slice(0, firstIndex).filter((item) => !idSet.has(item.id)).length;
+}
+
+function getDropInsertionIndex(files: FileItem[], movingIds: string[], insertionIndex: number): number {
+  const movingIdSet = new Set(movingIds);
+  const clampedIndex = clampIndex(insertionIndex, files.length);
+  return files.slice(0, clampedIndex).filter((item) => !movingIdSet.has(item.id)).length;
+}
+
+function parseInternalDragIds(value: string, fallback: string[]): string[] {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    return [value];
+  }
+  return fallback;
 }
 
 function setTransparentDragImage(event: DragEvent): void {

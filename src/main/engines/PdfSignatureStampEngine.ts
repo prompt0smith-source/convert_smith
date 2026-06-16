@@ -143,11 +143,13 @@ export class PdfSignatureStampEngine {
       placement.keepAspectRatio || !placement.heightPercent
         ? width / imageRatio
         : Math.max(1, (pageHeight * placement.heightPercent) / 100);
+    const safeWidth = Math.min(width, pageWidth);
+    const safeHeight = Math.min(height, pageHeight);
     return {
-      x: Math.min(Math.max(0, x), Math.max(0, pageWidth - 1)),
-      y: Math.min(Math.max(0, pageHeight - yTop - height), Math.max(0, pageHeight - 1)),
-      width: Math.min(width, pageWidth),
-      height: Math.min(height, pageHeight)
+      x: Math.min(Math.max(0, x), Math.max(0, pageWidth - safeWidth)),
+      y: Math.min(Math.max(0, pageHeight - yTop - safeHeight), Math.max(0, pageHeight - safeHeight)),
+      width: safeWidth,
+      height: safeHeight
     };
   }
 

@@ -164,6 +164,13 @@ export function OutputSettings({
           </div>
         )}
 
+        {selectedConversion === "pdf_to_xlsx" && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900">
+            PDF에 보이는 표와 텍스트를 새 XLSX로 재구성합니다. 원본 엑셀의 수식, 필터, 숨김 시트,
+            피벗 정보는 PDF에 남아 있지 않아 복원되지 않을 수 있습니다.
+          </p>
+        )}
+
         {selectedConversion === "jpg_to_png" && (
           <p className="rounded-md bg-stone-100 px-3 py-2 text-sm leading-6 text-stone-700">
             {helperMessages.jpgToPng}

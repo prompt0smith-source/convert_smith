@@ -24,6 +24,7 @@ import { ImageEngine } from "../engines/ImageEngine.js";
 import { PdfEngine } from "../engines/PdfEngine.js";
 import { OfficeEngine } from "../engines/OfficeEngine.js";
 import { PdfToDocxEngine } from "../engines/PdfToDocxEngine.js";
+import { PdfToXlsxEngine } from "../engines/PdfToXlsxEngine.js";
 import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
 import { decodeBmpToPngBuffer } from "./BmpImageService.js";
 
@@ -57,7 +58,8 @@ export class ConversionService {
     new ImageEngine(),
     new PdfEngine(),
     new OfficeEngine(),
-    new PdfToDocxEngine()
+    new PdfToDocxEngine(),
+    new PdfToXlsxEngine()
   );
   private readonly controllers = new Map<string, AbortController>();
 

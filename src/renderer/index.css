@@ -15,6 +15,7 @@ body {
   min-width: 0;
   min-height: 100vh;
   overflow: hidden;
+  user-select: none;
 }
 
 html,
@@ -27,6 +28,14 @@ button,
 select,
 input {
   font: inherit;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"],
+.allow-text-selection {
+  user-select: text;
 }
 
 button,
@@ -66,6 +75,16 @@ button:disabled {
   cursor: not-allowed;
 }
 
+body.convert-smith-grabbing,
+body.convert-smith-grabbing * {
+  cursor: grabbing !important;
+}
+
+.convert-file-drag-ghost {
+  pointer-events: none;
+  will-change: transform;
+}
+
 .app-header-inner,
 .app-header-actions {
   min-width: 0;
@@ -78,6 +97,57 @@ button:disabled {
 
 .app-main-grid {
   grid-template-columns: minmax(260px, 31%) 64px minmax(300px, 30%) minmax(320px, 1fr);
+}
+
+.compact-shell {
+  container-type: inline-size;
+}
+
+.compact-drop-area {
+  min-height: 0;
+}
+
+.compact-task-select select {
+  appearance: auto;
+}
+
+.compact-panels {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compact-file-list {
+  scrollbar-width: thin;
+}
+
+.compact-file-placeholder {
+  position: relative;
+  border-color: #059669 !important;
+  background:
+    linear-gradient(90deg, rgba(16, 185, 129, 0.18), rgba(236, 253, 245, 0.96) 34%, rgba(16, 185, 129, 0.14));
+  outline: 2px solid rgba(16, 185, 129, 0.24);
+  outline-offset: 2px;
+  box-shadow:
+    inset 0 0 0 2px rgba(16, 185, 129, 0.22),
+    0 12px 26px rgba(16, 185, 129, 0.16);
+  animation: dropzonePlaceholderIn 120ms ease both;
+}
+
+.compact-file-placeholder::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: -5px;
+  height: 4px;
+  border-radius: 999px;
+  background: #059669;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.16);
+}
+
+@container (max-width: 390px) {
+  .compact-panels {
+    grid-template-columns: 1fr;
+  }
 }
 
 .dark {
@@ -376,10 +446,28 @@ button:disabled {
 }
 
 .dropzone-file-placeholder {
+  position: relative;
+  border-color: #059669 !important;
+  background:
+    linear-gradient(90deg, rgba(16, 185, 129, 0.18), rgba(236, 253, 245, 0.96) 34%, rgba(16, 185, 129, 0.14));
+  outline: 2px solid rgba(16, 185, 129, 0.24);
+  outline-offset: 2px;
   box-shadow:
-    inset 0 0 0 1px rgba(16, 185, 129, 0.18),
-    0 8px 20px rgba(16, 185, 129, 0.08);
+    inset 0 0 0 2px rgba(16, 185, 129, 0.22),
+    0 14px 30px rgba(16, 185, 129, 0.16);
   animation: dropzonePlaceholderIn 120ms ease both;
+}
+
+.dropzone-file-placeholder::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: -6px;
+  height: 5px;
+  border-radius: 999px;
+  background: #059669;
+  box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.16);
 }
 
 .pdf-split-workspace {
@@ -427,6 +515,7 @@ button:disabled {
 }
 
 .pdf-split-page-return-zone {
+  position: relative;
   min-height: 112px;
   transition:
     border-color 140ms ease,
@@ -435,14 +524,18 @@ button:disabled {
 }
 
 .pdf-split-page-return-zone--active {
-  border-color: #10b981;
-  background: #ecfdf5;
+  border-color: #059669;
+  background:
+    linear-gradient(135deg, rgba(209, 250, 229, 0.96), rgba(236, 253, 245, 0.92));
+  outline: 2px solid rgba(16, 185, 129, 0.26);
+  outline-offset: 2px;
   box-shadow:
-    inset 0 0 0 1px rgba(16, 185, 129, 0.2),
-    0 10px 28px rgba(16, 185, 129, 0.1);
+    inset 0 0 0 2px rgba(16, 185, 129, 0.24),
+    0 12px 30px rgba(16, 185, 129, 0.14);
 }
 
 .pdf-split-group-dropzone {
+  position: relative;
   min-height: 112px;
   transition:
     transform 140ms ease,
@@ -452,12 +545,25 @@ button:disabled {
 }
 
 .pdf-split-group-dropzone--active {
-  border-color: #10b981;
-  background: #ecfdf5;
+  border-color: #059669;
+  background:
+    linear-gradient(135deg, rgba(209, 250, 229, 0.96), rgba(236, 253, 245, 0.92));
+  outline: 2px solid rgba(16, 185, 129, 0.26);
+  outline-offset: 2px;
   box-shadow:
-    inset 0 0 0 1px rgba(16, 185, 129, 0.2),
-    0 10px 28px rgba(16, 185, 129, 0.12);
+    inset 0 0 0 2px rgba(16, 185, 129, 0.24),
+    0 12px 30px rgba(16, 185, 129, 0.16);
   transform: translateY(-1px);
+}
+
+.pdf-split-page-return-zone--active::before,
+.pdf-split-group-dropzone--active::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border: 1px dashed rgba(5, 150, 105, 0.52);
+  border-radius: 8px;
+  pointer-events: none;
 }
 
 .dark .pdf-split-group-dropzone--active {

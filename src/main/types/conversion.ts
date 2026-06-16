@@ -1,5 +1,6 @@
 export type ConversionType =
   | "pdf_to_docx"
+  | "pdf_to_xlsx"
   | "docx_to_pdf"
   | "images_to_pdf"
   | "pdf_to_images"

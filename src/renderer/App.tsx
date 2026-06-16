@@ -1,5 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, CheckCircle2, FileCog, FileStack, ShieldCheck, X, XCircle } from "lucide-react";
+import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  FileCog,
+  FileStack,
+  FolderOpen,
+  GripVertical,
+  Maximize2,
+  Minimize2,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Trash2,
+  X,
+  XCircle
+} from "lucide-react";
 import type {
   ConversionJob,
   ConversionOptions,
@@ -17,8 +35,8 @@ import type {
   StartPdfToolPayload,
   WorkMode
 } from "../main/types/conversion";
-import type { ContextMenuStatus } from "../main/types/contextMenu";
-import { DropZone } from "./components/DropZone";
+import type { ContextMenuLaunchRequest, ContextMenuStatus } from "../main/types/contextMenu";
+import { DropZone, type FileSelectionModifiers } from "./components/DropZone";
 import { ConversionTypeSelector } from "./components/ConversionTypeSelector";
 import { OutputSettings } from "./components/OutputSettings";
 import { PreviewPanel } from "./components/PreviewPanel";
@@ -50,6 +68,7 @@ const TERMS_ACCEPTED_STORAGE_KEY = "convertSmith.termsAcceptedVersion";
 const TERMS_VERSION = "2026-06-15";
 const INTERNAL_FILE_DRAG_TYPE = "application/x-convert-smith-file-id";
 const INTERNAL_PAGE_DRAG_TYPE = "application/x-convert-smith-page";
+const POINTER_DRAG_THRESHOLD = 5;
 
 interface ConversionToast {
   id: string;
@@ -83,10 +102,62 @@ interface PreflightNoticeItem {
   message: string;
 }
 
+interface FileListSnapshot {
+  files: FileItem[];
+  selectedFileId?: string;
+  selectedFileIds: string[];
+  selectionAnchorId?: string;
+  individualTargets: Record<string, ConversionType>;
+  sortMode: SortMode;
+}
+
+interface InternalFileClipboard {
+  files: FileItem[];
+  targets: Record<string, ConversionType>;
+  cut: boolean;
+}
+
+interface FilePointerDragSession {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  ids: string[];
+  dragging: boolean;
+}
+
+interface FileDragGhostPosition {
+  x: number;
+  y: number;
+}
+
 interface QuickConversionPreset {
   label: string;
   preferredTypes: ConversionType[];
 }
+
+type CompactTask =
+  | "pdf_merge"
+  | "pdf_split_all"
+  | "images_to_pdf"
+  | "pdf_to_images"
+  | "video_compatibility_repair"
+  | "image_optimize"
+  | "doc_to_pdf";
+
+interface CompactTaskOption {
+  value: CompactTask;
+  label: string;
+}
+
+const COMPACT_TASK_OPTIONS: CompactTaskOption[] = [
+  { value: "pdf_merge", label: "PDF 병합" },
+  { value: "pdf_split_all", label: "PDF 분할" },
+  { value: "images_to_pdf", label: "이미지 PDF" },
+  { value: "pdf_to_images", label: "PDF 이미지" },
+  { value: "video_compatibility_repair", label: "호환 MP4" },
+  { value: "image_optimize", label: "이미지 최적화" },
+  { value: "doc_to_pdf", label: "문서 PDF" }
+];
 
 const QUICK_CONVERSION_PRESETS: QuickConversionPreset[] = [
   { label: "문서를 PDF로", preferredTypes: ["docx_to_pdf", "xlsx_to_pdf", "pptx_to_pdf"] },
@@ -118,6 +189,17 @@ export function App(): JSX.Element {
   const loadingHideTimerRef = useRef<number>();
   const modeTimerRefs = useRef<number[]>([]);
   const activeRunJobsRef = useRef<Map<string, ActiveRunJobState>>(new Map());
+  const fileStateRef = useRef<FileListSnapshot>({
+    files: [],
+    selectedFileId: undefined,
+    selectedFileIds: [],
+    selectionAnchorId: undefined,
+    individualTargets: {},
+    sortMode: "basic"
+  });
+  const undoFileStackRef = useRef<FileListSnapshot[]>([]);
+  const redoFileStackRef = useRef<FileListSnapshot[]>([]);
+  const internalFileClipboardRef = useRef<InternalFileClipboard>();
 
   const [files, setFiles] = useState<FileItem[]>([]);
   const [jobs, setJobs] = useState<ConversionJob[]>([]);
@@ -152,6 +234,8 @@ export function App(): JSX.Element {
     () => localStorage.getItem(OPEN_FILE_AFTER_SUCCESS_STORAGE_KEY) === "true"
   );
   const [selectedFileId, setSelectedFileId] = useState<string>();
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string>();
   const [options, setOptions] = useState<ConversionOptions>(() => {
     const libreOfficePath = localStorage.getItem("convertSmith.libreOfficePath") || undefined;
     const useDatedSubfolder = localStorage.getItem(USE_DATED_SUBFOLDER_STORAGE_KEY) === "true";
@@ -164,7 +248,12 @@ export function App(): JSX.Element {
   const [notice, setNotice] = useState<string>();
   const [darkMode, setDarkMode] = useState(localStorage.getItem("convertSmith.darkMode") === "true");
   const [floatingEnabled, setFloatingEnabled] = useState(true);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [isUtilityOpen, setIsUtilityOpen] = useState(false);
+  const [isCompactMode, setIsCompactMode] = useState(false);
+  const [compactTask, setCompactTask] = useState<CompactTask>("pdf_merge");
+  const [isCompactOptionsOpen, setIsCompactOptionsOpen] = useState(true);
+  const [isCompactCompletionOpen, setIsCompactCompletionOpen] = useState(false);
   const [arrowBurst, setArrowBurst] = useState(false);
   const [toast, setToast] = useState<ConversionToast>();
   const [loadingOverlay, setLoadingOverlay] = useState<LoadingOverlayState>();
@@ -196,6 +285,62 @@ export function App(): JSX.Element {
         ? individualTargets[selectedFile.id] || selectedFile.supportedConversions[0]
         : undefined;
 
+  useEffect(() => {
+    fileStateRef.current = {
+      files,
+      selectedFileId,
+      selectedFileIds,
+      selectionAnchorId,
+      individualTargets,
+      sortMode
+    };
+  }, [files, individualTargets, selectedFileId, selectedFileIds, selectionAnchorId, sortMode]);
+
+  const captureFileSnapshot = useCallback((): FileListSnapshot => {
+    const current = fileStateRef.current;
+    return {
+      files: cloneFileItems(current.files),
+      selectedFileId: current.selectedFileId,
+      selectedFileIds: [...current.selectedFileIds],
+      selectionAnchorId: current.selectionAnchorId,
+      individualTargets: { ...current.individualTargets },
+      sortMode: current.sortMode
+    };
+  }, []);
+
+  const applyFileSnapshot = useCallback((snapshot: FileListSnapshot) => {
+    setFiles(cloneFileItems(snapshot.files));
+    setSelectedFileId(snapshot.selectedFileId);
+    setSelectedFileIds([...snapshot.selectedFileIds]);
+    setSelectionAnchorId(snapshot.selectionAnchorId);
+    setIndividualTargets({ ...snapshot.individualTargets });
+    setSortMode(snapshot.sortMode);
+  }, []);
+
+  const pushFileHistory = useCallback(() => {
+    undoFileStackRef.current.push(captureFileSnapshot());
+    if (undoFileStackRef.current.length > 80) {
+      undoFileStackRef.current.shift();
+    }
+    redoFileStackRef.current = [];
+  }, [captureFileSnapshot]);
+
+  const undoFileAction = useCallback(() => {
+    const previous = undoFileStackRef.current.pop();
+    if (!previous) return;
+    redoFileStackRef.current.push(captureFileSnapshot());
+    applyFileSnapshot(previous);
+    setNotice("파일 목록 작업을 되돌렸습니다.");
+  }, [applyFileSnapshot, captureFileSnapshot]);
+
+  const redoFileAction = useCallback(() => {
+    const next = redoFileStackRef.current.pop();
+    if (!next) return;
+    undoFileStackRef.current.push(captureFileSnapshot());
+    applyFileSnapshot(next);
+    setNotice("파일 목록 작업을 다시 적용했습니다.");
+  }, [applyFileSnapshot, captureFileSnapshot]);
+
   const getPlannedRunInfo = useCallback((): Pick<LoadingOverlayState, "total" | "expectedJobs"> => {
     const sorted = sortFiles(files, sortMode);
     if (sorted.length === 0) return { total: 0, expectedJobs: 0 };
@@ -208,7 +353,10 @@ export function App(): JSX.Element {
 
     if (convertMode === "batch") {
       if (!batchConversionType) return { total: 0, expectedJobs: 0 };
-      const createsOneJobPerFile = batchConversionType === "pdf_to_docx" || batchConversionType === "pdf_to_images";
+      const createsOneJobPerFile =
+        batchConversionType === "pdf_to_docx" ||
+        batchConversionType === "pdf_to_xlsx" ||
+        batchConversionType === "pdf_to_images";
       return { total: sorted.length, expectedJobs: createsOneJobPerFile ? sorted.length : 1 };
     }
 
@@ -386,6 +534,13 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    window.convertSmith
+      .getAlwaysOnTop()
+      .then(setAlwaysOnTop)
+      .catch(() => setAlwaysOnTop(false));
+  }, []);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
     localStorage.setItem("convertSmith.darkMode", String(darkMode));
   }, [darkMode]);
@@ -419,10 +574,29 @@ export function App(): JSX.Element {
   }, [batchConversionType, commonConversions]);
 
   useEffect(() => {
-    if (!selectedFileId && files[0]) {
-      setSelectedFileId(files[0].id);
+    if (files.length === 0) {
+      if (selectedFileId) setSelectedFileId(undefined);
+      setSelectedFileIds([]);
+      if (selectionAnchorId) setSelectionAnchorId(undefined);
+      return;
     }
-  }, [files, selectedFileId]);
+
+    const existingIds = new Set(files.map((item) => item.id));
+    const nextSelectedFileId = selectedFileId && existingIds.has(selectedFileId) ? selectedFileId : files[0].id;
+    if (selectedFileId !== nextSelectedFileId) {
+      setSelectedFileId(nextSelectedFileId);
+    }
+
+    setSelectedFileIds((current) => {
+      const filtered = current.filter((id) => existingIds.has(id));
+      const next = filtered.length > 0 ? filtered : nextSelectedFileId ? [nextSelectedFileId] : [];
+      return sameStringArray(current, next) ? current : next;
+    });
+
+    if (selectionAnchorId && !existingIds.has(selectionAnchorId)) {
+      setSelectionAnchorId(nextSelectedFileId);
+    }
+  }, [files, selectedFileId, selectionAnchorId]);
 
   useEffect(() => {
     setPdfPreviewPage(1);
@@ -459,6 +633,8 @@ export function App(): JSX.Element {
 
         if (!selectedFileId && deduped[0]) {
           setSelectedFileId(deduped[0].id);
+          setSelectedFileIds([deduped[0].id]);
+          setSelectionAnchorId(deduped[0].id);
         }
 
         return [...current, ...deduped];
@@ -520,7 +696,68 @@ export function App(): JSX.Element {
     [changeWorkMode, files, sortMode]
   );
 
+  const syncCompactTask = useCallback((task: CompactTask, sourceFiles: FileItem[]) => {
+    setCompactTask(task);
+    setModeAnimation("idle");
+
+    if (task === "pdf_merge" || task === "pdf_split_all") {
+      setWorkMode("pdf_tools");
+      setDisplayedWorkMode("pdf_tools");
+      setPdfToolType(task);
+      return;
+    }
+
+    setWorkMode("convert");
+    setDisplayedWorkMode("convert");
+
+    if (task === "image_optimize" || task === "doc_to_pdf") {
+      setConvertMode("individual");
+      setIndividualTargets((current) => {
+        const next = { ...current };
+        for (const item of sourceFiles) {
+          const conversionType = getCompactTaskConversionForFile(task, item);
+          if (conversionType) next[item.id] = conversionType;
+        }
+        return next;
+      });
+      return;
+    }
+
+    setConvertMode("batch");
+    setBatchConversionType(task);
+  }, []);
+
+  const changeCompactMode = useCallback(
+    async (enabled: boolean) => {
+      try {
+        if (enabled) {
+          syncCompactTask("pdf_merge", files);
+          setIsCompactOptionsOpen(true);
+          setIsCompactCompletionOpen(false);
+        }
+        const applied = await window.convertSmith.setCompactMode(enabled);
+        if (applied) setIsCompactMode(enabled);
+      } catch (error) {
+        setNotice(practicalError(error));
+      }
+    },
+    [files, syncCompactTask]
+  );
+
+  const changeCompactTask = useCallback(
+    (task: CompactTask) => {
+      syncCompactTask(task, files);
+    },
+    [files, syncCompactTask]
+  );
+
+  useEffect(() => {
+    if (!isCompactMode) return;
+    syncCompactTask(compactTask, files);
+  }, [compactTask, files, isCompactMode, syncCompactTask]);
+
   const reorderFiles = useCallback((orderedIds: string[]) => {
+    pushFileHistory();
     setSortMode("custom");
     setFiles((current) => {
       const byId = new Map(current.map((item) => [item.id, item]));
@@ -529,7 +766,328 @@ export function App(): JSX.Element {
       const remaining = current.filter((item) => !orderedSet.has(item.id));
       return [...ordered, ...remaining].map((item, index) => ({ ...item, dropIndex: index }));
     });
-  }, []);
+  }, [pushFileHistory]);
+
+  const moveSelectedFilesByKeyboard = useCallback(
+    (direction: -1 | 1) => {
+      const orderedIds = displayFiles.map((item) => item.id);
+      const nextIds = moveSelectedIdsByStep(orderedIds, selectedFileIds, direction);
+      if (!nextIds) return false;
+      reorderFiles(nextIds);
+      return true;
+    },
+    [displayFiles, reorderFiles, selectedFileIds]
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      if (isEditablePasteTarget(event.target)) return;
+
+      const moved = moveSelectedFilesByKeyboard(event.key === "ArrowUp" ? -1 : 1);
+      if (!moved) return;
+      event.preventDefault();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [moveSelectedFilesByKeyboard]);
+
+  const selectFileItem = useCallback(
+    (item: FileItem, modifiers: FileSelectionModifiers = {}) => {
+      const isToggle = Boolean(modifiers.ctrlKey || modifiers.metaKey);
+      const anchorId = selectionAnchorId || selectedFileId || item.id;
+
+      if (modifiers.preserveSelection && selectedFileIds.includes(item.id)) {
+        setSelectedFileId(item.id);
+        setSelectionAnchorId(item.id);
+        return;
+      }
+
+      if (modifiers.shiftKey) {
+        const anchorIndex = displayFiles.findIndex((file) => file.id === anchorId);
+        const targetIndex = displayFiles.findIndex((file) => file.id === item.id);
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex);
+          const end = Math.max(anchorIndex, targetIndex);
+          const rangeIds = displayFiles.slice(start, end + 1).map((file) => file.id);
+          const nextIds = isToggle ? mergeUniqueIds(selectedFileIds, rangeIds) : rangeIds;
+          setSelectedFileId(item.id);
+          setSelectedFileIds(nextIds);
+          setSelectionAnchorId(anchorId);
+          return;
+        }
+      }
+
+      if (isToggle) {
+        setSelectedFileId(item.id);
+        setSelectionAnchorId(item.id);
+        setSelectedFileIds((current) => {
+          const next = current.includes(item.id)
+            ? current.filter((id) => id !== item.id)
+            : [...current, item.id];
+          return next.length > 0 ? next : [item.id];
+        });
+        return;
+      }
+
+      setSelectedFileId(item.id);
+      setSelectedFileIds([item.id]);
+      setSelectionAnchorId(item.id);
+    },
+    [displayFiles, selectedFileId, selectedFileIds, selectionAnchorId]
+  );
+
+  const copySelectedFile = useCallback((cut: boolean) => {
+    const current = fileStateRef.current;
+    const selected = current.files.find((item) => item.id === current.selectedFileId);
+    if (!selected) {
+      setNotice("복사할 파일을 먼저 선택해주세요.");
+      return;
+    }
+
+    const target = current.individualTargets[selected.id];
+    internalFileClipboardRef.current = {
+      files: [{ ...selected }],
+      targets: target ? { [selected.id]: target } : {},
+      cut
+    };
+
+    if (!cut) {
+      setNotice(`${shortenName(selected.name, 16)} 항목을 복사했습니다.`);
+      return;
+    }
+
+    pushFileHistory();
+    const ordered = sortFiles(current.files, current.sortMode);
+    const selectedIndex = ordered.findIndex((item) => item.id === selected.id);
+    const fallbackSelection =
+      ordered[selectedIndex + 1]?.id || ordered[selectedIndex - 1]?.id || current.files.find((item) => item.id !== selected.id)?.id;
+    const nextTargets = { ...current.individualTargets };
+    delete nextTargets[selected.id];
+    setFiles(current.files.filter((item) => item.id !== selected.id).map((item, index) => ({ ...item, dropIndex: index })));
+    setIndividualTargets(nextTargets);
+    setSelectedFileId(fallbackSelection);
+    setNotice(`${shortenName(selected.name, 16)} 항목을 잘라냈습니다.`);
+  }, [pushFileHistory]);
+
+  const copySelectedFiles = useCallback((cut: boolean) => {
+    const current = fileStateRef.current;
+    const selectedIds = getActiveSelectionIds(current);
+    const selectedIdSet = new Set(selectedIds);
+    const selectedFiles = sortFiles(current.files, current.sortMode).filter((item) => selectedIdSet.has(item.id));
+    if (selectedFiles.length === 0) {
+      setNotice("먼저 복사할 파일을 선택해주세요.");
+      return;
+    }
+
+    internalFileClipboardRef.current = {
+      files: selectedFiles.map((item) => ({ ...item })),
+      targets: Object.fromEntries(
+        selectedFiles
+          .map((item) => [item.id, current.individualTargets[item.id]] as const)
+          .filter((entry): entry is readonly [string, ConversionType] => Boolean(entry[1]))
+      ),
+      cut
+    };
+
+    if (!cut) {
+      setNotice(`${selectedFiles.length}개 항목을 복사했습니다.`);
+      return;
+    }
+
+    pushFileHistory();
+    const ordered = sortFiles(current.files, current.sortMode);
+    const selectedIndex = ordered.findIndex((item) => selectedIdSet.has(item.id));
+    const remainingOrdered = ordered.filter((item) => !selectedIdSet.has(item.id));
+    const fallbackSelection =
+      remainingOrdered[Math.min(selectedIndex, Math.max(remainingOrdered.length - 1, 0))]?.id;
+    const nextTargets = { ...current.individualTargets };
+    selectedFiles.forEach((item) => delete nextTargets[item.id]);
+
+    setFiles(current.files.filter((item) => !selectedIdSet.has(item.id)).map((item, index) => ({ ...item, dropIndex: index })));
+    setIndividualTargets(nextTargets);
+    setSelectedFileId(fallbackSelection);
+    setSelectedFileIds(fallbackSelection ? [fallbackSelection] : []);
+    setSelectionAnchorId(fallbackSelection);
+    setNotice(`${selectedFiles.length}개 항목을 잘라냈습니다.`);
+  }, [pushFileHistory]);
+
+  const pasteInternalFile = useCallback((): boolean => {
+    const clipboard = internalFileClipboardRef.current;
+    if (!clipboard || clipboard.files.length === 0) return false;
+
+    const current = fileStateRef.current;
+    const ordered = sortFiles(current.files, current.sortMode);
+    const selectedIndex = ordered.findIndex((item) => item.id === current.selectedFileId);
+    const insertIndex = selectedIndex >= 0 ? selectedIndex + 1 : ordered.length;
+    const existingIds = new Set(ordered.map((item) => item.id));
+    const pastedItems = clipboard.files.map((item) => {
+      const shouldKeepId = clipboard.cut && !existingIds.has(item.id);
+      return {
+        ...item,
+        id: shouldKeepId ? item.id : createRendererFileId(),
+        dropIndex: 0
+      };
+    });
+    const nextFiles = [
+      ...ordered.slice(0, insertIndex),
+      ...pastedItems,
+      ...ordered.slice(insertIndex)
+    ].map((item, index) => ({ ...item, dropIndex: index }));
+    const nextTargets = { ...current.individualTargets };
+    pastedItems.forEach((item, index) => {
+      const source = clipboard.files[index];
+      const sourceTarget = clipboard.targets[source.id];
+      if (sourceTarget) nextTargets[item.id] = sourceTarget;
+    });
+
+    pushFileHistory();
+    setFiles(nextFiles);
+    setIndividualTargets(nextTargets);
+    setSortMode("custom");
+    setSelectedFileId(pastedItems[0]?.id);
+    setNotice(`${pastedItems.length}개 항목을 선택한 위치 아래에 붙여넣었습니다.`);
+    if (clipboard.cut) {
+      internalFileClipboardRef.current = undefined;
+    }
+    return true;
+  }, [pushFileHistory]);
+
+  const pasteInternalFiles = useCallback((): boolean => {
+    const clipboard = internalFileClipboardRef.current;
+    if (!clipboard || clipboard.files.length === 0) return false;
+
+    const current = fileStateRef.current;
+    const ordered = sortFiles(current.files, current.sortMode);
+    const selectedIds = getActiveSelectionIds(current);
+    const lastSelectedIndex = ordered.reduce(
+      (index, item, itemIndex) => (selectedIds.includes(item.id) ? itemIndex : index),
+      -1
+    );
+    const insertIndex = lastSelectedIndex >= 0 ? lastSelectedIndex + 1 : ordered.length;
+    const existingIds = new Set(ordered.map((item) => item.id));
+    const pastedItems = clipboard.files.map((item) => {
+      const shouldKeepId = clipboard.cut && !existingIds.has(item.id);
+      return {
+        ...item,
+        id: shouldKeepId ? item.id : createRendererFileId(),
+        dropIndex: 0
+      };
+    });
+    const nextFiles = [
+      ...ordered.slice(0, insertIndex),
+      ...pastedItems,
+      ...ordered.slice(insertIndex)
+    ].map((item, index) => ({ ...item, dropIndex: index }));
+    const nextTargets = { ...current.individualTargets };
+    pastedItems.forEach((item, index) => {
+      const source = clipboard.files[index];
+      const sourceTarget = clipboard.targets[source.id];
+      if (sourceTarget) nextTargets[item.id] = sourceTarget;
+    });
+
+    pushFileHistory();
+    setFiles(nextFiles);
+    setIndividualTargets(nextTargets);
+    setSortMode("custom");
+    setSelectedFileId(pastedItems[0]?.id);
+    setSelectedFileIds(pastedItems.map((item) => item.id));
+    setSelectionAnchorId(pastedItems[0]?.id);
+    setNotice(`${pastedItems.length}개 항목을 선택 위치 아래에 붙여넣었습니다.`);
+    if (clipboard.cut) {
+      internalFileClipboardRef.current = undefined;
+    }
+    return true;
+  }, [pushFileHistory]);
+
+  const selectAllFiles = useCallback(() => {
+    const ids = displayFiles.map((item) => item.id);
+    if (ids.length === 0) return;
+    setSelectedFileId(ids[0]);
+    setSelectedFileIds(ids);
+    setSelectionAnchorId(ids[0]);
+    setNotice(`${ids.length}개 파일을 모두 선택했습니다.`);
+  }, [displayFiles]);
+
+  const deleteSelectedFiles = useCallback(() => {
+    const current = fileStateRef.current;
+    const selectedIds = getActiveSelectionIds(current);
+    if (selectedIds.length === 0) return;
+
+    pushFileHistory();
+    const selectedIdSet = new Set(selectedIds);
+    const ordered = sortFiles(current.files, current.sortMode);
+    const firstSelectedIndex = ordered.findIndex((item) => selectedIdSet.has(item.id));
+    const remainingOrdered = ordered.filter((item) => !selectedIdSet.has(item.id));
+    const fallbackSelection =
+      remainingOrdered[Math.min(firstSelectedIndex, Math.max(remainingOrdered.length - 1, 0))]?.id;
+    const nextTargets = { ...current.individualTargets };
+    selectedIds.forEach((id) => delete nextTargets[id]);
+
+    setFiles(current.files.filter((item) => !selectedIdSet.has(item.id)).map((item, index) => ({ ...item, dropIndex: index })));
+    setIndividualTargets(nextTargets);
+    setSelectedFileId(fallbackSelection);
+    setSelectedFileIds(fallbackSelection ? [fallbackSelection] : []);
+    setSelectionAnchorId(fallbackSelection);
+    setNotice(`${selectedIds.length}개 항목을 목록에서 제거했습니다.`);
+  }, [pushFileHistory]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey || event.metaKey || isEditablePasteTarget(event.target)) return;
+
+      if (event.key === "Delete") {
+        event.preventDefault();
+        deleteSelectedFiles();
+        return;
+      }
+
+      if (!event.ctrlKey) return;
+      const key = event.key.toLowerCase();
+
+      if (key === "a") {
+        event.preventDefault();
+        selectAllFiles();
+        return;
+      }
+
+      if (key === "c") {
+        event.preventDefault();
+        copySelectedFiles(false);
+        return;
+      }
+
+      if (key === "x") {
+        event.preventDefault();
+        copySelectedFiles(true);
+        return;
+      }
+
+      if (key === "v") {
+        if (!internalFileClipboardRef.current) return;
+        event.preventDefault();
+        pasteInternalFiles();
+        return;
+      }
+
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redoFileAction();
+        else undoFileAction();
+        return;
+      }
+
+      if (key === "y") {
+        event.preventDefault();
+        redoFileAction();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [copySelectedFiles, deleteSelectedFiles, pasteInternalFiles, redoFileAction, selectAllFiles, undoFileAction]);
 
   const resolvePaths = useCallback(
     async (paths: string[]) => {
@@ -560,23 +1118,54 @@ export function App(): JSX.Element {
     [changeWorkMode, resolvePaths]
   );
 
+  const handleLaunchRequests = useCallback(
+    async (requests: ContextMenuLaunchRequest[]) => {
+      const normalized = normalizeLaunchRequests(requests);
+      if (normalized.length === 0) return;
+
+      const action = normalized[normalized.length - 1].action;
+      const launchPaths = dedupePaths(normalized.flatMap((request) => request.paths));
+      if (launchPaths.length === 0) return;
+
+      if (action === "merge") {
+        changeWorkMode("pdf_tools");
+        setPdfToolType("pdf_merge");
+        await resolvePaths(launchPaths);
+        setNotice("탐색기에서 선택한 PDF를 병합 작업으로 불러왔습니다. 순서를 확인한 뒤 시작해주세요.");
+        return;
+      }
+
+      if (action === "split") {
+        changeWorkMode("pdf_tools");
+        setPdfToolType("pdf_split_all");
+        await resolvePaths(launchPaths);
+        setNotice("탐색기에서 선택한 PDF를 분할 작업으로 불러왔습니다. 페이지를 확인한 뒤 시작해주세요.");
+        return;
+      }
+
+      await handleLaunchPaths(launchPaths);
+      setNotice("탐색기에서 선택한 파일을 불러왔습니다. 변환 형식을 확인한 뒤 시작해주세요.");
+    },
+    [changeWorkMode, handleLaunchPaths, resolvePaths]
+  );
+
   useEffect(() => {
     let cancelled = false;
     window.convertSmith
       .getLaunchFiles()
-      .then((paths) => {
-        if (!cancelled) void handleLaunchPaths(paths);
+      .then((requests) => {
+        if (!cancelled) void handleLaunchRequests(requests);
       })
       .catch((error: unknown) => setNotice(practicalError(error)));
 
-    const unsubscribe = window.convertSmith.onLaunchFiles((paths) => {
-      void handleLaunchPaths(paths).catch((error: unknown) => setNotice(practicalError(error)));
+    const unsubscribe = window.convertSmith.onLaunchFiles((requests) => {
+      void handleLaunchRequests(requests).catch((error: unknown) => setNotice(practicalError(error)));
     });
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [handleLaunchPaths]);
+  }, [handleLaunchRequests]);
 
   useEffect(() => {
     let dragDepth = 0;
@@ -586,27 +1175,27 @@ export function App(): JSX.Element {
       event.stopPropagation();
     };
     const onDragEnter = (event: DragEvent) => {
-      prevent(event);
       if (!isExternalFileDrag(event)) return;
+      prevent(event);
       dragDepth += 1;
       setIsDragging(true);
     };
     const onDragOver = (event: DragEvent) => {
-      prevent(event);
       if (!isExternalFileDrag(event)) return;
+      prevent(event);
       if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
     };
     const onDragLeave = (event: DragEvent) => {
-      prevent(event);
       if (!isExternalFileDrag(event)) return;
+      prevent(event);
       dragDepth = Math.max(0, dragDepth - 1);
       if (dragDepth === 0) setIsDragging(false);
     };
     const onDrop = (event: DragEvent) => {
+      if (!isExternalFileDrag(event)) return;
       prevent(event);
       dragDepth = 0;
       setIsDragging(false);
-      if (!isExternalFileDrag(event)) return;
       void extractDroppedPaths(event.dataTransfer).then(resolvePaths);
     };
 
@@ -727,6 +1316,17 @@ export function App(): JSX.Element {
     }
   };
 
+  const changeAlwaysOnTop = async (value: boolean) => {
+    setAlwaysOnTop(value);
+    try {
+      const confirmed = await window.convertSmith.setAlwaysOnTop(value);
+      setAlwaysOnTop(confirmed);
+    } catch (error) {
+      setNotice(practicalError(error));
+      setAlwaysOnTop((current) => !current);
+    }
+  };
+
   const ensureConversionPreflightReady = useCallback(async (): Promise<boolean> => {
     if (displayedWorkMode !== "convert") return true;
     const needsLibreOffice = plannedConversionEntries.some(
@@ -765,7 +1365,7 @@ export function App(): JSX.Element {
           setNotice("변환 형식을 선택해주세요.");
           return;
         }
-        if (["pdf_to_docx", "pdf_to_images"].includes(batchConversionType)) {
+        if (["pdf_to_docx", "pdf_to_xlsx", "pdf_to_images"].includes(batchConversionType)) {
           for (const item of sorted) {
             submittedJobs.push(await submitJob([item.path], batchConversionType));
           }
@@ -792,6 +1392,8 @@ export function App(): JSX.Element {
         setFiles([]);
         setIndividualTargets({});
         setSelectedFileId(undefined);
+        setSelectedFileIds([]);
+        setSelectionAnchorId(undefined);
       }
     } finally {
       setIsConverting(false);
@@ -941,6 +1543,7 @@ export function App(): JSX.Element {
   };
 
   const removeFile = (id: string) => {
+    pushFileHistory();
     setFiles((current) => current.filter((item) => item.id !== id));
     setIndividualTargets((current) => {
       const next = { ...current };
@@ -949,6 +1552,10 @@ export function App(): JSX.Element {
     });
     if (selectedFileId === id) {
       setSelectedFileId(undefined);
+    }
+    setSelectedFileIds((current) => current.filter((itemId) => itemId !== id));
+    if (selectionAnchorId === id) {
+      setSelectionAnchorId(undefined);
     }
   };
 
@@ -980,6 +1587,51 @@ export function App(): JSX.Element {
       {loadingOverlay && <ConversionLoadingOverlay state={loadingOverlay} />}
       {!termsAccepted && <TermsAgreementModal onAgree={acceptTerms} onDecline={declineTerms} />}
 
+      {isCompactMode ? (
+        <CompactWorkspace
+          files={files}
+          displayFiles={displayFiles}
+          selectedFileId={selectedFile?.id}
+          selectedFileIds={selectedFileIds}
+          sortMode={sortMode}
+          task={compactTask}
+          taskOptions={COMPACT_TASK_OPTIONS}
+          notice={notice}
+          isDragging={isDragging}
+          isConverting={isConverting}
+          arrowBurst={arrowBurst}
+          outputDir={outputDir}
+          sourceOutputDir={sourceOutputDir}
+          useSourceFolder={useSourceFolder}
+          useDatedSubfolder={Boolean(options.useDatedSubfolder)}
+          outputName={outputName}
+          selectedConversion={selectedConversion}
+          options={options}
+          isOptionsOpen={isCompactOptionsOpen}
+          isCompletionOpen={isCompactCompletionOpen}
+          clearFilesAfterSuccess={clearFilesAfterSuccess}
+          openFolderAfterSuccess={openFolderAfterSuccess}
+          openFileAfterSuccess={openFileAfterSuccess}
+          onTaskChange={changeCompactTask}
+          onPickFiles={pickFiles}
+          onPickOutputDir={pickOutputDir}
+          onUseSourceFolderChange={changeUseSourceFolder}
+          onUseDatedSubfolderChange={(value) => setOptions((current) => ({ ...current, useDatedSubfolder: value }))}
+          onOutputNameChange={setOutputName}
+          onOptionsChange={setOptions}
+          onOptionsToggle={() => setIsCompactOptionsOpen((value) => !value)}
+          onCompletionToggle={() => setIsCompactCompletionOpen((value) => !value)}
+          onClearFilesAfterSuccessChange={setClearFilesAfterSuccess}
+          onOpenFolderAfterSuccessChange={setOpenFolderAfterSuccess}
+          onOpenFileAfterSuccessChange={setOpenFileAfterSuccess}
+          onSelectFile={selectFileItem}
+          onRemoveFile={removeFile}
+          onReorderFiles={reorderFiles}
+          onRun={triggerConversion}
+          onExpand={() => void changeCompactMode(false)}
+        />
+      ) : (
+        <>
       <header className="app-header border-b border-stone-200 bg-white px-6 py-4">
         <div className="app-header-inner flex items-center justify-between gap-4">
           <div className="min-w-0">
@@ -1015,6 +1667,15 @@ export function App(): JSX.Element {
               <ShieldCheck size={16} />
               로컬 변환 · 업로드 없음
             </div>
+            <button
+              type="button"
+              onClick={() => void changeCompactMode(true)}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-700 shadow-sm hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800"
+              title="약식 실행창으로 줄이기"
+            >
+              <Minimize2 size={15} />
+              약식
+            </button>
             <UtilityDrawer
               isOpen={isUtilityOpen}
               dependencyStatus={dependencyStatus}
@@ -1023,6 +1684,7 @@ export function App(): JSX.Element {
               contextMenuStatus={contextMenuStatus}
               darkMode={darkMode}
               floatingEnabled={floatingEnabled}
+              alwaysOnTop={alwaysOnTop}
               onToggle={() => setIsUtilityOpen((value) => !value)}
               onClose={() => setIsUtilityOpen(false)}
               onRefreshDependencies={refreshDependencies}
@@ -1032,6 +1694,7 @@ export function App(): JSX.Element {
               onUninstallContextMenu={uninstallContextMenu}
               onDarkModeChange={setDarkMode}
               onFloatingEnabledChange={changeFloatingEnabled}
+              onAlwaysOnTopChange={changeAlwaysOnTop}
               onCancelJob={(jobId) => void window.convertSmith.cancelConversion(jobId)}
               onReveal={revealPath}
               onCopy={copyPath}
@@ -1052,6 +1715,7 @@ export function App(): JSX.Element {
           displayFiles={displayFiles}
           sortMode={sortMode}
           selectedFileId={selectedFile?.id}
+          selectedFileIds={selectedFileIds}
           isDragging={isDragging}
           clearFilesAfterSuccess={clearFilesAfterSuccess}
           openFolderAfterSuccess={openFolderAfterSuccess}
@@ -1063,7 +1727,7 @@ export function App(): JSX.Element {
           onOpenFolderAfterSuccessChange={setOpenFolderAfterSuccess}
           onOpenFileAfterSuccessChange={setOpenFileAfterSuccess}
           onOutputNameChange={setOutputName}
-          onSelectFile={(item) => setSelectedFileId(item.id)}
+          onSelectFile={selectFileItem}
           onRemoveFile={removeFile}
           onReorderFiles={reorderFiles}
         />
@@ -1168,6 +1832,775 @@ export function App(): JSX.Element {
       <footer className="app-footer flex h-7 shrink-0 items-center justify-center border-t border-stone-200 bg-white px-4 text-[11px] font-semibold tracking-[0.08em] text-stone-500">
         COPYRIGHT © JINKYU YOO
       </footer>
+        </>
+      )}
+    </div>
+  );
+}
+
+function CompactWorkspace({
+  files,
+  displayFiles,
+  selectedFileId,
+  selectedFileIds,
+  sortMode,
+  task,
+  taskOptions,
+  notice,
+  isDragging,
+  isConverting,
+  arrowBurst,
+  outputDir,
+  sourceOutputDir,
+  useSourceFolder,
+  useDatedSubfolder,
+  outputName,
+  selectedConversion,
+  options,
+  isOptionsOpen,
+  isCompletionOpen,
+  clearFilesAfterSuccess,
+  openFolderAfterSuccess,
+  openFileAfterSuccess,
+  onTaskChange,
+  onPickFiles,
+  onPickOutputDir,
+  onUseSourceFolderChange,
+  onUseDatedSubfolderChange,
+  onOutputNameChange,
+  onOptionsChange,
+  onOptionsToggle,
+  onCompletionToggle,
+  onClearFilesAfterSuccessChange,
+  onOpenFolderAfterSuccessChange,
+  onOpenFileAfterSuccessChange,
+  onSelectFile,
+  onRemoveFile,
+  onReorderFiles,
+  onRun,
+  onExpand
+}: {
+  files: FileItem[];
+  displayFiles: FileItem[];
+  selectedFileId?: string;
+  selectedFileIds: string[];
+  sortMode: SortMode;
+  task: CompactTask;
+  taskOptions: CompactTaskOption[];
+  notice?: string;
+  isDragging: boolean;
+  isConverting: boolean;
+  arrowBurst: boolean;
+  outputDir?: string;
+  sourceOutputDir?: string;
+  useSourceFolder: boolean;
+  useDatedSubfolder: boolean;
+  outputName: string;
+  selectedConversion?: ConversionType;
+  options: ConversionOptions;
+  isOptionsOpen: boolean;
+  isCompletionOpen: boolean;
+  clearFilesAfterSuccess: boolean;
+  openFolderAfterSuccess: boolean;
+  openFileAfterSuccess: boolean;
+  onTaskChange: (task: CompactTask) => void;
+  onPickFiles: () => void;
+  onPickOutputDir: () => void;
+  onUseSourceFolderChange: (value: boolean) => void;
+  onUseDatedSubfolderChange: (value: boolean) => void;
+  onOutputNameChange: (value: string) => void;
+  onOptionsChange: (options: ConversionOptions) => void;
+  onOptionsToggle: () => void;
+  onCompletionToggle: () => void;
+  onClearFilesAfterSuccessChange: (value: boolean) => void;
+  onOpenFolderAfterSuccessChange: (value: boolean) => void;
+  onOpenFileAfterSuccessChange: (value: boolean) => void;
+  onSelectFile: (item: FileItem, modifiers?: FileSelectionModifiers) => void;
+  onRemoveFile: (id: string) => void;
+  onReorderFiles: (orderedIds: string[]) => void;
+  onRun: () => void;
+  onExpand: () => void;
+}): JSX.Element {
+  const [draggedIds, setDraggedIds] = useState<string[]>([]);
+  const [insertionIndex, setInsertionIndex] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const pointerDragRef = useRef<FilePointerDragSession>();
+  const insertionIndexRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+  const [activePointerId, setActivePointerId] = useState<number | null>(null);
+  const [dragGhostPosition, setDragGhostPosition] = useState<FileDragGhostPosition | null>(null);
+  const selectedIdSet = new Set(selectedFileIds);
+  const draggedIdSet = new Set(draggedIds);
+  const draggedItems = draggedIds.length > 0 ? displayFiles.filter((item) => draggedIdSet.has(item.id)) : [];
+  const visibleFiles = draggedItems.length > 0 ? displayFiles.filter((item) => !draggedIdSet.has(item.id)) : displayFiles;
+  const placeholderIndex =
+    draggedItems.length > 0
+      ? getFileDropInsertionIndex(displayFiles, draggedIds, insertionIndex ?? getFileGroupInsertionIndex(displayFiles, draggedIds))
+      : -1;
+
+  const clearInternalDrag = () => {
+    pointerDragRef.current = undefined;
+    insertionIndexRef.current = null;
+    setDraggedIds([]);
+    setInsertionIndex(null);
+    setActivePointerId(null);
+    setDragGhostPosition(null);
+  };
+
+  const updateInsertionIndex = (value: number | null) => {
+    insertionIndexRef.current = value;
+    setInsertionIndex(value);
+  };
+
+  const getPointerInsertionIndex = (clientY: number): number => {
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-file-row-id]") || []);
+    if (rows.length === 0) return displayFiles.length;
+
+    for (const row of rows) {
+      const id = row.dataset.fileRowId;
+      const index = displayFiles.findIndex((file) => file.id === id);
+      if (index < 0) continue;
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return index;
+    }
+
+    return displayFiles.length;
+  };
+
+  const startDrag = (event: ReactDragEvent, item: FileItem) => {
+    event.stopPropagation();
+    const nextDraggedIds = selectedIdSet.has(item.id)
+      ? displayFiles.filter((file) => selectedIdSet.has(file.id)).map((file) => file.id)
+      : [item.id];
+
+    onSelectFile(item, selectedIdSet.has(item.id) ? { preserveSelection: true } : undefined);
+
+    setDraggedIds(nextDraggedIds);
+    setInsertionIndex(getFileGroupInsertionIndex(displayFiles, nextDraggedIds));
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(INTERNAL_FILE_DRAG_TYPE, JSON.stringify(nextDraggedIds));
+    setTransparentDragImage(event);
+  };
+
+  const startPointerDrag = (event: ReactPointerEvent<HTMLElement>, item: FileItem) => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest("[data-no-row-drag]")) return;
+    event.preventDefault();
+
+    const nextDraggedIds = selectedIdSet.has(item.id)
+      ? displayFiles.filter((file) => selectedIdSet.has(file.id)).map((file) => file.id)
+      : [item.id];
+
+    onSelectFile(item, selectedIdSet.has(item.id) ? { preserveSelection: true } : undefined);
+    pointerDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      ids: nextDraggedIds,
+      dragging: false
+    };
+    setActivePointerId(event.pointerId);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const movePointerDrag = (event: Pick<PointerEvent, "pointerId" | "clientX" | "clientY" | "preventDefault">) => {
+    const session = pointerDragRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    const distance = Math.hypot(event.clientX - session.startX, event.clientY - session.startY);
+    if (!session.dragging && distance < POINTER_DRAG_THRESHOLD) return;
+
+    event.preventDefault();
+    if (!session.dragging) {
+      session.dragging = true;
+      suppressClickRef.current = true;
+      setDraggedIds(session.ids);
+    }
+    setDragGhostPosition({ x: event.clientX, y: event.clientY });
+    updateInsertionIndex(getPointerInsertionIndex(event.clientY));
+  };
+
+  const finishPointerDrag = (event?: Pick<PointerEvent, "pointerId" | "preventDefault">) => {
+    const session = pointerDragRef.current;
+    if (!session || (event && session.pointerId !== event.pointerId)) return;
+    if (session.dragging) {
+      event?.preventDefault();
+      const sourceIds = session.ids;
+      const sourceIdSet = new Set(sourceIds);
+      const movingItems = displayFiles.filter((item) => sourceIdSet.has(item.id));
+      const nextBase = displayFiles.filter((item) => !sourceIdSet.has(item.id));
+      const nextIndex = getFileDropInsertionIndex(displayFiles, sourceIds, insertionIndexRef.current ?? displayFiles.length);
+      if (movingItems.length > 0) {
+        const nextIds = nextBase.map((item) => item.id);
+        nextIds.splice(nextIndex, 0, ...movingItems.map((item) => item.id));
+        if (nextIds.join("\u0000") !== displayFiles.map((item) => item.id).join("\u0000")) {
+          onReorderFiles(nextIds);
+        }
+      }
+    }
+
+    clearInternalDrag();
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+  };
+
+  const overList = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasInternalFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (event.clientY <= rect.top + 18) setInsertionIndex(0);
+    if (event.clientY >= rect.bottom - 18) setInsertionIndex(visibleFiles.length);
+  };
+
+  const overRow = (event: ReactDragEvent<HTMLElement>, index: number) => {
+    if (!hasInternalFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setInsertionIndex(event.clientY < rect.top + rect.height / 2 ? index : index + 1);
+  };
+
+  const dropDrag = (event: ReactDragEvent) => {
+    if (!hasInternalFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceIds = parseInternalFileDragIds(event.dataTransfer.getData(INTERNAL_FILE_DRAG_TYPE), draggedIds);
+    const sourceIdSet = new Set(sourceIds);
+    const movingItems = displayFiles.filter((item) => sourceIdSet.has(item.id));
+    const nextBase = displayFiles.filter((item) => !sourceIdSet.has(item.id));
+    const nextIndex = getFileDropInsertionIndex(displayFiles, sourceIds, insertionIndex ?? displayFiles.length);
+    clearInternalDrag();
+    if (movingItems.length === 0) return;
+    const nextIds = nextBase.map((item) => item.id);
+    nextIds.splice(nextIndex, 0, ...movingItems.map((item) => item.id));
+    if (nextIds.join("\u0000") !== displayFiles.map((item) => item.id).join("\u0000")) {
+      onReorderFiles(nextIds);
+    }
+  };
+
+  const effectiveOutputDir = useSourceFolder ? sourceOutputDir : outputDir;
+
+  useEffect(() => {
+    if (draggedIds.length === 0) return undefined;
+
+    const clearSoon = () => window.setTimeout(clearInternalDrag, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearInternalDrag();
+    };
+
+    window.addEventListener("dragend", clearInternalDrag, true);
+    window.addEventListener("drop", clearSoon, true);
+    window.addEventListener("blur", clearInternalDrag);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("dragend", clearInternalDrag, true);
+      window.removeEventListener("drop", clearSoon, true);
+      window.removeEventListener("blur", clearInternalDrag);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [draggedIds.length]);
+
+  useEffect(() => {
+    if (activePointerId === null) return undefined;
+
+    const onPointerMove = (event: PointerEvent) => movePointerDrag(event);
+    const onPointerUp = (event: PointerEvent) => finishPointerDrag(event);
+    const onPointerCancel = (event: PointerEvent) => finishPointerDrag(event);
+    const onBlur = () => clearInternalDrag();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        suppressClickRef.current = false;
+        clearInternalDrag();
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp, { passive: false });
+    window.addEventListener("pointercancel", onPointerCancel, { passive: false });
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [activePointerId, displayFiles, selectedFileIds]);
+
+  useEffect(() => {
+    document.body.classList.toggle("convert-smith-grabbing", draggedItems.length > 0);
+    return () => {
+      document.body.classList.remove("convert-smith-grabbing");
+    };
+  }, [draggedItems.length]);
+
+  return (
+    <main className="compact-shell flex min-h-0 flex-1 flex-col bg-white text-stone-900">
+      {dragGhostPosition &&
+        draggedItems.length > 0 &&
+        createPortal(<CompactFileDragGhost items={draggedItems} position={dragGhostPosition} />, document.body)}
+      <header className="compact-header flex shrink-0 items-center justify-between gap-2 border-b border-stone-200 px-3 py-2">
+        <div className="min-w-0">
+          <h1 className="truncate text-sm font-bold text-stone-950">Convert Smith</h1>
+          <p className="truncate text-[11px] text-stone-500">약식 실행창</p>
+        </div>
+        <button
+          type="button"
+          onClick={onExpand}
+          className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-stone-200 bg-white px-2 text-[11px] font-semibold text-stone-700 hover:bg-stone-50"
+        >
+          <Maximize2 size={13} />
+          전체
+        </button>
+      </header>
+
+      {notice && <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] leading-4 text-amber-900">{notice}</div>}
+
+      <section
+        className={[
+          "compact-drop-area m-2 flex min-h-0 flex-1 flex-col rounded-md border bg-stone-50 p-2 transition",
+          isDragging ? "border-emerald-500 bg-emerald-50" : "border-stone-200"
+        ].join(" ")}
+      >
+        <div className="grid shrink-0 grid-cols-[1fr_auto_auto] gap-1.5">
+          <label className="compact-task-select flex h-9 min-w-0 items-center rounded-md border border-stone-300 bg-white text-stone-800 shadow-sm">
+            <span className="flex shrink-0 items-center gap-1 border-r border-stone-200 px-2 text-[11px] font-semibold text-stone-600">
+              <FileCog size={12} />
+              작업
+            </span>
+            <select
+              value={task}
+              onChange={(event) => onTaskChange(event.target.value as CompactTask)}
+              className="h-full min-w-0 flex-1 border-0 bg-transparent px-1 text-[11px] font-semibold text-stone-800 outline-none"
+              aria-label="약식 작업 선택"
+            >
+              {taskOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={onOptionsToggle}
+            className={[
+              "inline-flex h-9 w-9 items-center justify-center rounded-md border text-stone-700",
+              isOptionsOpen ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-200 bg-white"
+            ].join(" ")}
+            aria-label="약식 옵션"
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={onCompletionToggle}
+            className={[
+              "inline-flex h-9 w-9 items-center justify-center rounded-md border text-stone-700",
+              isCompletionOpen ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-200 bg-white"
+            ].join(" ")}
+            aria-label="완료 후 처리"
+          >
+            <Settings2 size={14} />
+          </button>
+        </div>
+
+        {(isOptionsOpen || isCompletionOpen) && (
+          <div className="compact-panels mt-2 grid shrink-0 gap-2">
+            {isOptionsOpen && (
+              <CompactOptionsPanel
+                outputDir={effectiveOutputDir}
+                useSourceFolder={useSourceFolder}
+                useDatedSubfolder={useDatedSubfolder}
+                outputName={outputName}
+                selectedConversion={selectedConversion}
+                options={options}
+                onPickOutputDir={onPickOutputDir}
+                onUseSourceFolderChange={onUseSourceFolderChange}
+                onUseDatedSubfolderChange={onUseDatedSubfolderChange}
+                onOutputNameChange={onOutputNameChange}
+                onOptionsChange={onOptionsChange}
+              />
+            )}
+            {isCompletionOpen && (
+              <CompactCompletionPanel
+                clearFilesAfterSuccess={clearFilesAfterSuccess}
+                openFolderAfterSuccess={openFolderAfterSuccess}
+                openFileAfterSuccess={openFileAfterSuccess}
+                onClearFilesAfterSuccessChange={onClearFilesAfterSuccessChange}
+                onOpenFolderAfterSuccessChange={onOpenFolderAfterSuccessChange}
+                onOpenFileAfterSuccessChange={onOpenFileAfterSuccessChange}
+              />
+            )}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={onPickFiles}
+          className="mt-2 flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-dashed border-emerald-400 bg-white text-xs font-semibold text-emerald-800 hover:bg-emerald-50"
+        >
+          <FolderOpen size={14} />
+          파일 드롭 · 붙여넣기 · 선택
+        </button>
+
+        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-stone-500">
+          <span>{files.length}개 파일</span>
+          <span>{sortMode === "custom" ? "Custom 순서" : "드래그로 순서 변경"}</span>
+        </div>
+
+        <div
+          ref={listRef}
+          className="compact-file-list mt-1 min-h-0 flex-1 space-y-1 overflow-auto rounded-md border border-stone-200 bg-white p-1.5"
+          onDragOver={overList}
+          onDrop={dropDrag}
+        >
+          {visibleFiles.length === 0 && draggedItems.length === 0 && (
+            <div className="flex h-full min-h-[120px] items-center justify-center rounded-md border border-dashed border-stone-300 px-3 text-center text-xs leading-5 text-stone-500">
+              파일을 여기에 놓거나 Ctrl+V로 붙여넣으세요.
+            </div>
+          )}
+          {visibleFiles.map((item, index) => (
+            <CompactFileRow
+              key={item.id}
+              item={item}
+              index={index}
+              selected={selectedFileIds.includes(item.id)}
+              active={item.id === selectedFileId}
+              draggedItems={draggedItems}
+              isDragSource={draggedIdSet.has(item.id)}
+              placeholderIndex={placeholderIndex}
+              onPointerDown={startPointerDrag}
+              onPointerMove={movePointerDrag}
+              onPointerUp={finishPointerDrag}
+              onPointerCancel={finishPointerDrag}
+              shouldSuppressClick={() => suppressClickRef.current}
+              onSelect={onSelectFile}
+              onRemove={onRemoveFile}
+            />
+          ))}
+          {draggedItems.length > 0 && placeholderIndex === visibleFiles.length && (
+            <CompactFilePlaceholder items={draggedItems} />
+          )}
+        </div>
+
+        <div className="mt-2 flex shrink-0 items-end justify-between gap-2">
+          <p className="min-w-0 text-[11px] leading-4 text-stone-500">
+            선택 순서대로 처리됩니다. 원본 파일은 직접 수정하지 않습니다.
+          </p>
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={isConverting}
+            aria-label="작업 실행"
+            className={[
+              "convert-arrow-button flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-emerald-300 bg-white text-emerald-700 shadow-sm transition hover:border-emerald-500 hover:bg-emerald-50 disabled:opacity-60",
+              arrowBurst ? "convert-arrow-button--burst" : ""
+            ].join(" ")}
+          >
+            <ArrowRight className="convert-arrow-icon" size={30} strokeWidth={5} />
+          </button>
+        </div>
+      </section>
+
+      <footer className="h-6 shrink-0 border-t border-stone-200 bg-white px-2 text-center text-[10px] font-semibold tracking-[0.08em] text-stone-500">
+        COPYRIGHT © JINKYU YOO
+      </footer>
+    </main>
+  );
+}
+
+function CompactOptionsPanel({
+  outputDir,
+  useSourceFolder,
+  useDatedSubfolder,
+  outputName,
+  selectedConversion,
+  options,
+  onPickOutputDir,
+  onUseSourceFolderChange,
+  onUseDatedSubfolderChange,
+  onOutputNameChange,
+  onOptionsChange
+}: {
+  outputDir?: string;
+  useSourceFolder: boolean;
+  useDatedSubfolder: boolean;
+  outputName: string;
+  selectedConversion?: ConversionType;
+  options: ConversionOptions;
+  onPickOutputDir: () => void;
+  onUseSourceFolderChange: (value: boolean) => void;
+  onUseDatedSubfolderChange: (value: boolean) => void;
+  onOutputNameChange: (value: string) => void;
+  onOptionsChange: (options: ConversionOptions) => void;
+}): JSX.Element {
+  const update = (patch: Partial<ConversionOptions>) => onOptionsChange({ ...options, ...patch });
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-2 text-[11px] text-stone-700">
+      <h2 className="mb-1.5 text-xs font-semibold text-stone-950">옵션</h2>
+      <div className="space-y-1.5">
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={useSourceFolder}
+            onChange={(event) => onUseSourceFolderChange(event.target.checked)}
+            className="h-3.5 w-3.5 accent-emerald-700"
+          />
+          원본 폴더 저장
+        </label>
+        <button
+          type="button"
+          onClick={onPickOutputDir}
+          className="flex h-7 w-full min-w-0 items-center justify-between gap-2 rounded border border-stone-300 bg-stone-50 px-2 text-left text-[11px] hover:bg-stone-100"
+        >
+          <span className="truncate">{outputDir || "저장 폴더 선택"}</span>
+          <FolderOpen size={12} />
+        </button>
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={useDatedSubfolder}
+            onChange={(event) => onUseDatedSubfolderChange(event.target.checked)}
+            className="h-3.5 w-3.5 accent-emerald-700"
+          />
+          날짜별 폴더
+        </label>
+        <input
+          value={outputName}
+          onChange={(event) => onOutputNameChange(event.target.value)}
+          placeholder="결과 파일명"
+          className="h-7 w-full rounded border border-stone-300 bg-white px-2 text-[11px] outline-none focus:border-emerald-400"
+        />
+        {selectedConversion && compactUsesImageQuality(selectedConversion) && (
+          <label className="block">
+            품질 {options.imageQuality}
+            <input
+              type="range"
+              min={50}
+              max={100}
+              value={options.imageQuality}
+              onChange={(event) => update({ imageQuality: Number(event.target.value) })}
+              className="mt-1 w-full accent-emerald-700"
+            />
+          </label>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CompactCompletionPanel({
+  clearFilesAfterSuccess,
+  openFolderAfterSuccess,
+  openFileAfterSuccess,
+  onClearFilesAfterSuccessChange,
+  onOpenFolderAfterSuccessChange,
+  onOpenFileAfterSuccessChange
+}: {
+  clearFilesAfterSuccess: boolean;
+  openFolderAfterSuccess: boolean;
+  openFileAfterSuccess: boolean;
+  onClearFilesAfterSuccessChange: (value: boolean) => void;
+  onOpenFolderAfterSuccessChange: (value: boolean) => void;
+  onOpenFileAfterSuccessChange: (value: boolean) => void;
+}): JSX.Element {
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-2 text-[11px] text-stone-700">
+      <h2 className="mb-1.5 text-xs font-semibold text-stone-950">완료 후 처리</h2>
+      <div className="space-y-1.5">
+        <CompactCheck
+          label="목록 초기화"
+          checked={clearFilesAfterSuccess}
+          onChange={onClearFilesAfterSuccessChange}
+        />
+        <CompactCheck
+          label="결과 위치 열기"
+          checked={openFolderAfterSuccess}
+          onChange={onOpenFolderAfterSuccessChange}
+        />
+        <CompactCheck
+          label="첫 결과 파일 열기"
+          checked={openFileAfterSuccess}
+          onChange={onOpenFileAfterSuccessChange}
+        />
+      </div>
+    </section>
+  );
+}
+
+function CompactCheck({
+  label,
+  checked,
+  onChange
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}): JSX.Element {
+  return (
+    <label className="flex items-center justify-between gap-2 rounded bg-stone-50 px-2 py-1">
+      <span className="truncate">{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-3.5 w-3.5 shrink-0 accent-emerald-700"
+      />
+    </label>
+  );
+}
+
+function CompactFileRow({
+  item,
+  index,
+  selected,
+  active,
+  draggedItems,
+  isDragSource,
+  placeholderIndex,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  shouldSuppressClick,
+  onSelect,
+  onRemove
+}: {
+  item: FileItem;
+  index: number;
+  selected: boolean;
+  active: boolean;
+  draggedItems: FileItem[];
+  isDragSource: boolean;
+  placeholderIndex: number;
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>, item: FileItem) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
+  shouldSuppressClick: () => boolean;
+  onSelect: (item: FileItem, modifiers?: FileSelectionModifiers) => void;
+  onRemove: (id: string) => void;
+}): JSX.Element {
+  return (
+    <>
+      {draggedItems.length > 0 && placeholderIndex === index && <CompactFilePlaceholder items={draggedItems} />}
+      <div
+        role="button"
+        tabIndex={0}
+        data-file-row-id={item.id}
+        onPointerDown={(event) => onPointerDown(event, item)}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onClick={(event) => {
+          if (shouldSuppressClick()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+          onSelect(item, {
+            shiftKey: event.shiftKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey
+          });
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect(item);
+          }
+        }}
+        className={[
+          "grid w-full select-none grid-cols-[14px_1fr_auto] items-center gap-1.5 rounded border px-2 py-1.5 text-left transition",
+          selected ? "border-emerald-400 bg-emerald-50" : "border-stone-200 bg-white hover:border-emerald-200",
+          active ? "ring-1 ring-emerald-200" : "",
+          isDragSource ? "opacity-45" : ""
+        ].join(" ")}
+      >
+        <span
+          className="inline-flex h-6 w-4 cursor-grab items-center justify-center rounded text-stone-400 active:cursor-grabbing"
+          aria-label="파일 순서 이동"
+        >
+          <GripVertical size={12} />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-xs font-semibold text-stone-900">{item.name}</span>
+          <span className="block truncate text-[10px] text-stone-500">
+            {item.extension} · {formatBytes(item.size)}
+          </span>
+        </span>
+        <span
+          role="button"
+          tabIndex={0}
+          data-no-row-drag="true"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(item.id);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              onRemove(item.id);
+            }
+          }}
+          className="inline-flex h-6 w-6 items-center justify-center rounded text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+          aria-label={`${item.name} 제거`}
+        >
+          <Trash2 size={12} />
+        </span>
+      </div>
+    </>
+  );
+}
+
+function CompactFilePlaceholder({ items }: { items: FileItem[] }): JSX.Element {
+  const item = items[0] as FileItem;
+  const countLabel = items.length > 1 ? `${items.length}개 이동` : "여기";
+  return (
+    <div className="compact-file-placeholder grid w-full select-none grid-cols-[14px_1fr_auto] items-center gap-1.5 rounded border border-emerald-400 bg-emerald-50 px-2 py-1.5 text-left">
+      <GripVertical size={12} className="text-emerald-500" />
+      <span className="min-w-0">
+        <span className="block truncate text-xs font-semibold text-stone-900">{item.name}</span>
+        <span className="block truncate text-[10px] text-stone-500">
+          {item.extension} · {formatBytes(item.size)}
+        </span>
+      </span>
+      <span className="text-[10px] font-semibold text-emerald-700">여기</span>
+    </div>
+  );
+}
+
+function CompactFileDragGhost({
+  items,
+  position
+}: {
+  items: FileItem[];
+  position: FileDragGhostPosition;
+}): JSX.Element {
+  const item = items[0] as FileItem;
+  const countLabel = items.length > 1 ? `${items.length}개` : "";
+  return (
+    <div
+      className="convert-file-drag-ghost fixed z-[80] grid w-[220px] select-none grid-cols-[1fr_auto] items-center gap-2 rounded-md border border-emerald-400 bg-white/92 px-2.5 py-2 text-left text-stone-900 shadow-xl backdrop-blur-sm"
+      style={{
+        transform: `translate3d(${position.x - 10}px, ${position.y - 10}px, 0)`
+      }}
+      aria-hidden="true"
+    >
+      <span className="min-w-0">
+        <span className="block truncate text-[11px] font-semibold">{item.name}</span>
+        <span className="mt-0.5 block truncate text-[10px] text-stone-500">
+          {item.extension} 쨌 {formatBytes(item.size)}
+        </span>
+      </span>
+      <span className="text-[10px] font-semibold text-emerald-700">{countLabel}</span>
     </div>
   );
 }
@@ -1447,6 +2880,139 @@ function sortFiles(files: FileItem[], sortMode: SortMode): FileItem[] {
   });
 }
 
+function cloneFileItems(files: FileItem[]): FileItem[] {
+  return files.map((item) => ({ ...item }));
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function mergeUniqueIds(first: string[], second: string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const id of [...first, ...second]) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(id);
+  }
+  return merged;
+}
+
+function moveSelectedIdsByStep(orderedIds: string[], selectedIds: string[], direction: -1 | 1): string[] | undefined {
+  const selectedIdSet = new Set(selectedIds);
+  if (selectedIdSet.size === 0) return undefined;
+  if (!orderedIds.some((id) => selectedIdSet.has(id))) return undefined;
+
+  const nextIds = [...orderedIds];
+  if (direction < 0) {
+    for (let index = 1; index < nextIds.length; index += 1) {
+      if (!selectedIdSet.has(nextIds[index]) || selectedIdSet.has(nextIds[index - 1])) continue;
+      [nextIds[index - 1], nextIds[index]] = [nextIds[index], nextIds[index - 1]];
+    }
+  } else {
+    for (let index = nextIds.length - 2; index >= 0; index -= 1) {
+      if (!selectedIdSet.has(nextIds[index]) || selectedIdSet.has(nextIds[index + 1])) continue;
+      [nextIds[index], nextIds[index + 1]] = [nextIds[index + 1], nextIds[index]];
+    }
+  }
+
+  return sameStringArray(orderedIds, nextIds) ? undefined : nextIds;
+}
+
+function getActiveSelectionIds(snapshot: FileListSnapshot): string[] {
+  const existingIds = new Set(snapshot.files.map((item) => item.id));
+  const selectedIds = snapshot.selectedFileIds.filter((id) => existingIds.has(id));
+  if (selectedIds.length > 0) return selectedIds;
+  return snapshot.selectedFileId && existingIds.has(snapshot.selectedFileId) ? [snapshot.selectedFileId] : [];
+}
+
+function createRendererFileId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `renderer-${crypto.randomUUID()}`;
+  }
+  return `renderer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getCompactTaskConversionForFile(task: CompactTask, file: FileItem): ConversionType | undefined {
+  const extension = file.extension.toLowerCase();
+  if (task === "image_optimize") {
+    if (extension === ".jpg" || extension === ".jpeg") return "jpg_optimize";
+    if (extension === ".png") return "png_optimize";
+    if (extension === ".webp") return "webp_optimize";
+    return undefined;
+  }
+  if (task === "doc_to_pdf") {
+    if (extension === ".doc" || extension === ".docx") return "docx_to_pdf";
+    if (extension === ".xls" || extension === ".xlsx") return "xlsx_to_pdf";
+    if (extension === ".ppt" || extension === ".pptx") return "pptx_to_pdf";
+  }
+  return undefined;
+}
+
+function compactUsesImageQuality(conversionType: ConversionType): boolean {
+  return [
+    "heic_to_jpg",
+    "heic_to_png",
+    "png_to_jpg",
+    "pdf_to_images",
+    "image_to_webp",
+    "jpg_optimize",
+    "png_optimize",
+    "webp_optimize",
+    "webp_to_jpg",
+    "webp_to_png",
+    "avif_to_jpg",
+    "avif_to_png",
+    "tiff_to_jpg",
+    "tiff_to_png",
+    "bmp_to_jpg",
+    "bmp_to_png"
+  ].includes(conversionType);
+}
+
+function clampIndex(value: number, max: number): number {
+  return Math.min(Math.max(Math.trunc(value), 0), max);
+}
+
+function hasInternalFileDrag(event: ReactDragEvent | DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types || []).includes(INTERNAL_FILE_DRAG_TYPE);
+}
+
+function getFileGroupInsertionIndex(files: FileItem[], ids: string[]): number {
+  const idSet = new Set(ids);
+  const firstIndex = files.findIndex((item) => idSet.has(item.id));
+  if (firstIndex < 0) return files.length;
+  return files.slice(0, firstIndex).filter((item) => !idSet.has(item.id)).length;
+}
+
+function getFileDropInsertionIndex(files: FileItem[], movingIds: string[], insertionIndex: number): number {
+  const movingIdSet = new Set(movingIds);
+  const clampedIndex = clampIndex(insertionIndex, files.length);
+  return files.slice(0, clampedIndex).filter((item) => !movingIdSet.has(item.id)).length;
+}
+
+function parseInternalFileDragIds(value: string, fallback: string[]): string[] {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    return [value];
+  }
+  return fallback;
+}
+
+function setTransparentDragImage(event: ReactDragEvent): void {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  event.dataTransfer.setDragImage(canvas, 0, 0);
+}
+
 function getPlannedConversionEntries(
   files: FileItem[],
   sortMode: SortMode,
@@ -1547,6 +3113,26 @@ async function extractDroppedPaths(dataTransfer: DataTransfer | null): Promise<s
   const preloadPaths = window.convertSmith.getDroppedFilePaths(files);
   if (preloadPaths.length > 0) return preloadPaths;
   return files.map((file) => file.path).filter((filePath): filePath is string => Boolean(filePath));
+}
+
+function normalizeLaunchRequests(requests: ContextMenuLaunchRequest[]): ContextMenuLaunchRequest[] {
+  return requests.flatMap((request) => {
+    if (request.action !== "convert" && request.action !== "merge" && request.action !== "split") return [];
+    const paths = request.paths.filter((filePath) => filePath.trim());
+    return paths.length > 0 ? [{ action: request.action, paths }] : [];
+  });
+}
+
+function dedupePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const filePath of paths) {
+    const key = filePath.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(filePath);
+  }
+  return deduped;
 }
 
 function isExternalFileDrag(event: DragEvent): boolean {

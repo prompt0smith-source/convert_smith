@@ -1,4 +1,4 @@
-import { Download, Maximize2, MousePointerClick, Moon, Sun, Wrench } from "lucide-react";
+import { Download, Maximize2, MousePointerClick, Moon, Pin, Sun, Wrench } from "lucide-react";
 import type { ContextMenuStatus } from "../../main/types/contextMenu";
 
 interface SettingsPanelProps {
@@ -6,12 +6,14 @@ interface SettingsPanelProps {
   contextMenuStatus?: ContextMenuStatus;
   darkMode: boolean;
   floatingEnabled: boolean;
+  alwaysOnTop: boolean;
   onPickLibreOfficePath: () => void;
   onOpenLibreOfficeDownload: () => void;
   onInstallContextMenu: () => void;
   onUninstallContextMenu: () => void;
   onDarkModeChange: (value: boolean) => void;
   onFloatingEnabledChange: (value: boolean) => void;
+  onAlwaysOnTopChange: (value: boolean) => void;
 }
 
 export function SettingsPanel({
@@ -19,12 +21,14 @@ export function SettingsPanel({
   contextMenuStatus,
   darkMode,
   floatingEnabled,
+  alwaysOnTop,
   onPickLibreOfficePath,
   onOpenLibreOfficeDownload,
   onInstallContextMenu,
   onUninstallContextMenu,
   onDarkModeChange,
-  onFloatingEnabledChange
+  onFloatingEnabledChange,
+  onAlwaysOnTopChange
 }: SettingsPanelProps): JSX.Element {
   return (
     <section className="border-b border-stone-200 bg-white p-4">
@@ -121,6 +125,23 @@ export function SettingsPanel({
             className="h-4 w-4 accent-emerald-700"
           />
         </label>
+
+        <label className="flex items-center justify-between rounded-md bg-stone-50 px-3 py-2 text-sm text-stone-800">
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <Pin size={15} />
+            <span className="truncate">항상 위에 표시</span>
+          </span>
+          <input
+            type="checkbox"
+            checked={alwaysOnTop}
+            onChange={(event) => onAlwaysOnTopChange(event.target.checked)}
+            className="h-4 w-4 shrink-0 accent-emerald-700"
+          />
+        </label>
+
+        <p className="rounded-md bg-stone-50 px-3 py-2 text-xs leading-5 text-stone-600 [word-break:keep-all]">
+          파일 선택이나 드래그 중 Convert Smith가 다른 창 뒤로 밀리지 않도록 전방에 유지합니다.
+        </p>
       </div>
     </section>
   );

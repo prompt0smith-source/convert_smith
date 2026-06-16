@@ -2,6 +2,7 @@ import type { ConversionType, FileItem, PdfToolType } from "../../main/types/con
 
 export const conversionLabels: Record<ConversionType, string> = {
   pdf_to_docx: "PDF → Word / DOCX",
+  pdf_to_xlsx: "PDF → Excel / XLSX",
   docx_to_pdf: "Word / DOCX → PDF",
   images_to_pdf: "이미지 → PDF",
   pdf_to_images: "PDF → JPG / PNG",
@@ -37,6 +38,8 @@ export const conversionLabels: Record<ConversionType, string> = {
 export const conversionDescriptions: Record<ConversionType, string> = {
   pdf_to_docx:
     "PDF 내용을 Word에서 열 수 있도록 DOCX로 변환합니다. 원본 레이아웃은 완벽히 유지되지 않을 수 있습니다.",
+  pdf_to_xlsx:
+    "PDF에 보이는 표와 텍스트 위치를 분석해 엑셀에서 편집 가능한 XLSX로 재구성합니다. 수식, 필터, 숨김 시트는 복원되지 않을 수 있습니다.",
   docx_to_pdf: "문서 제출, 견적서, 계약서 공유용 PDF로 변환합니다.",
   images_to_pdf: "이미지 여러 장을 하나의 PDF 문서로 묶습니다. JPG, PNG, WEBP, AVIF, TIFF, BMP를 지원합니다.",
   pdf_to_images: "PDF 각 페이지를 이미지 파일로 추출합니다.",

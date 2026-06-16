@@ -1,6 +1,6 @@
 {
   "name": "convert-smith",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "description": "Local-first Electron file conversion app that creates genuinely usable output formats.",
   "main": "dist-electron/main/main.js",
   "type": "module",
@@ -23,6 +23,7 @@
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "heic-convert": "^2.1.0",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
@@ -49,7 +50,7 @@
     "appId": "com.convertsmith.app",
     "productName": "Convert Smith",
     "copyright": "Copyright © 2026 JINKYU YOO",
-    "icon": "icon",
+    "icon": "build/icon",
     "directories": {
       "output": "release"
     },
@@ -83,6 +84,7 @@
       "node_modules/@napi-rs/**"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": "nsis",
       "artifactName": "Convert Smith Setup ${version}.${ext}"
     },

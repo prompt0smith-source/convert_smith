@@ -15,6 +15,7 @@ interface UtilityDrawerProps {
   contextMenuStatus?: ContextMenuStatus;
   darkMode: boolean;
   floatingEnabled: boolean;
+  alwaysOnTop: boolean;
   onToggle: () => void;
   onClose: () => void;
   onRefreshDependencies: () => void;
@@ -24,6 +25,7 @@ interface UtilityDrawerProps {
   onUninstallContextMenu: () => void;
   onDarkModeChange: (value: boolean) => void;
   onFloatingEnabledChange: (value: boolean) => void;
+  onAlwaysOnTopChange: (value: boolean) => void;
   onCancelJob: (jobId: string) => void;
   onReveal: (path: string) => void;
   onCopy: (path: string) => void;
@@ -37,6 +39,7 @@ export function UtilityDrawer({
   contextMenuStatus,
   darkMode,
   floatingEnabled,
+  alwaysOnTop,
   onToggle,
   onClose,
   onRefreshDependencies,
@@ -46,6 +49,7 @@ export function UtilityDrawer({
   onUninstallContextMenu,
   onDarkModeChange,
   onFloatingEnabledChange,
+  onAlwaysOnTopChange,
   onCancelJob,
   onReveal,
   onCopy
@@ -140,12 +144,14 @@ export function UtilityDrawer({
                 contextMenuStatus={contextMenuStatus}
                 darkMode={darkMode}
                 floatingEnabled={floatingEnabled}
+                alwaysOnTop={alwaysOnTop}
                 onPickLibreOfficePath={onPickLibreOfficePath}
                 onOpenLibreOfficeDownload={onOpenLibreOfficeDownload}
                 onInstallContextMenu={onInstallContextMenu}
                 onUninstallContextMenu={onUninstallContextMenu}
                 onDarkModeChange={onDarkModeChange}
                 onFloatingEnabledChange={onFloatingEnabledChange}
+                onAlwaysOnTopChange={onAlwaysOnTopChange}
               />
               <JobQueue jobs={jobs} onCancel={onCancelJob} onReveal={onReveal} onCopy={onCopy} />
               <ConversionResultPanel jobs={jobs} onReveal={onReveal} />

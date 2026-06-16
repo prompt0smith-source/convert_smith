@@ -6,6 +6,7 @@ import { FileSignatureService } from "./FileSignatureService.js";
 
 const SUPPORTED_INPUTS: Record<ConversionType, string[]> = {
   pdf_to_docx: [".pdf"],
+  pdf_to_xlsx: [".pdf"],
   docx_to_pdf: [".docx", ".doc"],
   images_to_pdf: [".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".bmp"],
   pdf_to_images: [".pdf"],

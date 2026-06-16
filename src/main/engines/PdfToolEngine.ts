@@ -81,7 +81,7 @@ export class PdfToolEngine {
       onProgress(10 + Math.round((pageNumber / total) * 80), `페이지 ${pageNumber}/${total} 분할 중입니다.`);
       const target = await PDFDocument.create();
       await this.appendPages(target, source, [pageNumber], pageRotations);
-      const outputPath = await createOutputPath(`${baseName}_page_${String(pageNumber).padStart(3, "0")}`, "pdf");
+      const outputPath = await createOutputPath(`${baseName}(${pageNumber})`, "pdf");
       await writeFile(outputPath, await target.save());
       outputs.push(outputPath);
     }

@@ -27,13 +27,16 @@ contextBridge.exposeInMainWorld("convertSmith", {
   revealPath: (filePath) => ipcRenderer.invoke("file:reveal", filePath),
   setFloatingEnabled: (enabled) => ipcRenderer.invoke("floating:setEnabled", enabled),
   getFloatingEnabled: () => ipcRenderer.invoke("floating:getEnabled"),
+  setAlwaysOnTop: (enabled) => ipcRenderer.invoke("app:setAlwaysOnTop", enabled),
+  getAlwaysOnTop: () => ipcRenderer.invoke("app:getAlwaysOnTop"),
   showMainFromFloating: () => ipcRenderer.invoke("floating:showMain"),
   moveFloating: (x, y) => ipcRenderer.invoke("floating:move", x, y),
   getAppIconDataUrl: () => ipcRenderer.invoke("app:getIconDataUrl"),
   getContextMenuStatus: () => ipcRenderer.invoke("contextMenu:getStatus"),
   installContextMenu: () => ipcRenderer.invoke("contextMenu:install"),
   uninstallContextMenu: () => ipcRenderer.invoke("contextMenu:uninstall"),
-  getLaunchFiles: () => ipcRenderer.invoke("app:getLaunchFiles"),
+  getLaunchFiles: () => ipcRenderer.invoke("app:getLaunchFiles").then(normalizeLaunchRequests),
+  setCompactMode: (enabled) => ipcRenderer.invoke("app:setCompactMode", enabled),
   quitApp: () => ipcRenderer.invoke("app:quit"),
   onJobUpdate: (listener) => {
     const wrapped = (_event, job) => listener(job);
@@ -46,8 +49,24 @@ contextBridge.exposeInMainWorld("convertSmith", {
     return () => ipcRenderer.removeListener("pdfTool:jobUpdated", wrapped);
   },
   onLaunchFiles: (listener) => {
-    const wrapped = (_event, paths) => listener(Array.isArray(paths) ? paths.filter((item) => typeof item === "string") : []);
+    const wrapped = (_event, requests) => listener(normalizeLaunchRequests(requests));
     ipcRenderer.on("app:launchFiles", wrapped);
     return () => ipcRenderer.removeListener("app:launchFiles", wrapped);
   }
 });
+
+function normalizeLaunchRequests(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const action = normalizeLaunchAction(item.action);
+    const paths = Array.isArray(item.paths)
+      ? item.paths.filter((pathValue) => typeof pathValue === "string" && Boolean(pathValue.trim()))
+      : [];
+    return action && paths.length > 0 ? [{ action, paths }] : [];
+  });
+}
+
+function normalizeLaunchAction(value) {
+  return value === "convert" || value === "merge" || value === "split" ? value : undefined;
+}

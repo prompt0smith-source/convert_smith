@@ -4,6 +4,7 @@ import { ImageEngine } from "../engines/ImageEngine.js";
 import { PdfEngine } from "../engines/PdfEngine.js";
 import { OfficeEngine } from "../engines/OfficeEngine.js";
 import { PdfToDocxEngine } from "../engines/PdfToDocxEngine.js";
+import { PdfToXlsxEngine } from "../engines/PdfToXlsxEngine.js";
 
 type ProgressCallback = (progress: number, message: string) => void;
 type CreateOutputPath = (sourcePath: string, extension: string) => Promise<string>;
@@ -15,7 +16,8 @@ export class EngineRouter {
     private readonly image: ImageEngine,
     private readonly pdf: PdfEngine,
     private readonly office: OfficeEngine,
-    private readonly pdfToDocx: PdfToDocxEngine
+    private readonly pdfToDocx: PdfToDocxEngine,
+    private readonly pdfToXlsx: PdfToXlsxEngine
   ) {}
 
   async convert(
@@ -143,6 +145,11 @@ export class EngineRouter {
         } else {
           await this.pdfToDocx.convertEditableText(job.sourcePaths[0], outputPath, onProgress);
         }
+        return [outputPath];
+      }
+      case "pdf_to_xlsx": {
+        const outputPath = await createOutputPath(job.sourcePaths[0], "xlsx");
+        await this.pdfToXlsx.convert(job.sourcePaths[0], outputPath, onProgress);
         return [outputPath];
       }
       default:

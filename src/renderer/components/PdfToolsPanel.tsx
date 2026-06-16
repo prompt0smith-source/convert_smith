@@ -472,8 +472,10 @@ export function PdfToolsPanel({
                             setIsSplitPageReturnActive(false);
                           }}
                           className={[
-                            "pdf-split-page-card grid min-h-11 grid-cols-[auto_1fr] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2 py-2 text-sm",
-                            selectedPage === page ? "border-emerald-400 bg-emerald-50" : "",
+                            "pdf-split-page-card grid min-h-11 grid-cols-[auto_1fr] items-center gap-2 rounded-md border px-2 py-2 text-sm transition",
+                            selectedPage === page
+                              ? "border-emerald-500 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-200 ring-offset-1"
+                              : "border-stone-200 bg-stone-50 text-stone-700 hover:border-emerald-200 hover:bg-emerald-50/50",
                             splitDragPage === page ? "pdf-split-page-card--dragging" : ""
                           ].join(" ")}
                         >
@@ -553,8 +555,10 @@ export function PdfToolsPanel({
                                 setIsSplitPageReturnActive(false);
                               }}
                               className={[
-                                "pdf-split-page-chip inline-flex h-7 max-w-full items-center rounded-full bg-emerald-50 px-2 text-xs font-medium text-emerald-800 hover:bg-emerald-100",
-                                selectedPage === page ? "ring-2 ring-emerald-300 ring-offset-1" : "",
+                                "pdf-split-page-chip inline-flex h-7 max-w-full items-center rounded-full border px-2 text-xs font-medium transition",
+                                selectedPage === page
+                                  ? "border-emerald-500 bg-emerald-600 text-white ring-2 ring-emerald-300 ring-offset-1"
+                                  : "border-emerald-100 bg-emerald-50 text-emerald-800 hover:bg-emerald-100",
                                 splitDragPage === page ? "pdf-split-page-card--dragging" : ""
                               ].join(" ")}
                             >
@@ -596,8 +600,10 @@ export function PdfToolsPanel({
                     setDropTargetPage(null);
                   }}
                   className={[
-                    "grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2 py-2 text-sm",
-                    selectedPage === page ? "border-emerald-400 bg-emerald-50" : "",
+                    "grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border px-2 py-2 text-sm transition",
+                    selectedPage === page
+                      ? "border-emerald-500 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-200 ring-offset-1"
+                      : "border-stone-200 bg-stone-50 text-stone-700 hover:border-emerald-200 hover:bg-emerald-50/50",
                     dropTargetPage === page && dragPage !== page ? "ring-2 ring-emerald-300 ring-offset-1" : "",
                     dragPage === page ? "opacity-55" : ""
                   ].join(" ")}

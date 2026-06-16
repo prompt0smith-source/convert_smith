@@ -161,6 +161,21 @@ assertSuccess("PDF -> DOCX reading order", readingOrderJob);
 const readingOrderText = await readDocxText(readingOrderJob.outputPaths[0]);
 assertTextOrder("PDF -> DOCX reading order", readingOrderText, ["LEFT", "RIGHT", "BOTTOM"]);
 
+const xlsxJob = await service.convert(
+  {
+    sourcePaths: [readingOrderPdfInput],
+    outputDir: root,
+    conversionType: "pdf_to_xlsx",
+    options
+  },
+  () => undefined
+);
+assertSuccess("PDF -> XLSX table reconstruction", xlsxJob);
+const xlsxSheetXml = await read("tar", ["-xOf", xlsxJob.outputPaths[0], "xl/worksheets/sheet1.xml"]);
+if (!readInlineXlsxText(xlsxSheetXml).includes("LEFT") || !readInlineXlsxText(xlsxSheetXml).includes("RIGHT")) {
+  throw new Error("PDF -> XLSX did not keep selectable PDF text.");
+}
+
 const layeredPdfInput = path.join(root, "layered-text-image.pdf");
 const layeredPdf = await PDFDocument.create();
 const layeredPage = layeredPdf.addPage([360, 220]);
@@ -241,6 +256,10 @@ const splitJob = await pdfToolService.run(
 assertSuccess("PDF split all", splitJob);
 if (splitJob.outputPaths.length !== 2) {
   throw new Error(`PDF split expected 2 files, got ${splitJob.outputPaths.length}`);
+}
+const splitNames = splitJob.outputPaths.map((outputPath) => path.basename(outputPath));
+if (!splitNames.includes("merged_smoke(1).pdf") || !splitNames.includes("merged_smoke(2).pdf")) {
+  throw new Error(`PDF split default naming was wrong: ${splitNames.join(", ")}`);
 }
 
 const signatureImageInput = path.join(root, "signature.png");
@@ -352,6 +371,7 @@ console.log(`JPG optimize: ${jpgOptimizeJob.outputPaths[0]}`);
 console.log(`PNG optimize: ${pngOptimizeJob.outputPaths[0]}`);
 console.log(`WEBP optimize: ${webpOptimizeJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX reading order: ${readingOrderJob.outputPaths[0]}`);
+console.log(`PDF -> XLSX table reconstruction: ${xlsxJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX text/image separation: ${layeredJob.outputPaths[0]}`);
 console.log(`PDF merge: ${mergeJob.outputPaths[0]}`);
 console.log(`PDF split files: ${splitJob.outputPaths.length}`);
@@ -448,6 +468,12 @@ async function readDocxXml(docxPath) {
 
 function readDocxTextFromXml(xml) {
   return [...xml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)]
+    .map((match) => decodeXml(match[1]))
+    .join("\n");
+}
+
+function readInlineXlsxText(xml) {
+  return [...xml.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
     .map((match) => decodeXml(match[1]))
     .join("\n");
 }

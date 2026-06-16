@@ -9,7 +9,7 @@ import type {
   StartPdfToolPayload,
   VideoInspection
 } from "../main/types/conversion.js";
-import type { ContextMenuStatus } from "../main/types/contextMenu.js";
+import type { ContextMenuLaunchRequest, ContextMenuStatus } from "../main/types/contextMenu.js";
 
 export interface ConvertSmithApi {
   getDroppedFilePaths(files: File[]): string[];
@@ -32,15 +32,18 @@ export interface ConvertSmithApi {
   revealPath(path: string): Promise<{ ok: boolean; message: string }>;
   setFloatingEnabled(enabled: boolean): Promise<boolean>;
   getFloatingEnabled(): Promise<boolean>;
+  setAlwaysOnTop(enabled: boolean): Promise<boolean>;
+  getAlwaysOnTop(): Promise<boolean>;
   showMainFromFloating(): Promise<boolean>;
   moveFloating(x: number, y: number): Promise<boolean>;
   getAppIconDataUrl(): Promise<string>;
   getContextMenuStatus(): Promise<ContextMenuStatus>;
   installContextMenu(): Promise<ContextMenuStatus>;
   uninstallContextMenu(): Promise<ContextMenuStatus>;
-  getLaunchFiles(): Promise<string[]>;
+  getLaunchFiles(): Promise<ContextMenuLaunchRequest[]>;
+  setCompactMode(enabled: boolean): Promise<boolean>;
   quitApp(): Promise<boolean>;
   onJobUpdate(listener: (job: ConversionJob) => void): () => void;
   onPdfToolUpdate(listener: (job: PdfToolJob) => void): () => void;
-  onLaunchFiles(listener: (paths: string[]) => void): () => void;
+  onLaunchFiles(listener: (requests: ContextMenuLaunchRequest[]) => void): () => void;
 }
