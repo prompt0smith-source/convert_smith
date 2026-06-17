@@ -10,6 +10,7 @@ interface ContextMenuEntry {
   label: string;
   action: ContextMenuLaunchAction;
   multiSelectModel: "Document" | "Single";
+  position?: "Top" | "Bottom";
 }
 
 const OLD_SHELL_KEY = "HKCU\\Software\\Classes\\*\\shell\\ConvertSmith";
@@ -20,21 +21,24 @@ const CONTEXT_MENU_ENTRIES: ContextMenuEntry[] = [
     commandKey: "HKCU\\Software\\Classes\\*\\shell\\ConvertSmithConvert\\command",
     label: "Convert with Convert Smith",
     action: "convert",
-    multiSelectModel: "Document"
+    multiSelectModel: "Document",
+    position: "Top"
   },
   {
     shellKey: "HKCU\\Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\ConvertSmithMerge",
     commandKey: "HKCU\\Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\ConvertSmithMerge\\command",
-    label: "Merge with Convert Smith",
+    label: "Merge with Convert Smith(&M)",
     action: "merge",
-    multiSelectModel: "Document"
+    multiSelectModel: "Document",
+    position: "Top"
   },
   {
     shellKey: "HKCU\\Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\ConvertSmithSplit",
     commandKey: "HKCU\\Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\ConvertSmithSplit\\command",
-    label: "Split with Convert Smith",
+    label: "Split with Convert Smith(&S)",
     action: "split",
-    multiSelectModel: "Single"
+    multiSelectModel: "Single",
+    position: "Top"
   }
 ];
 
@@ -76,6 +80,9 @@ export class ContextMenuService {
         await this.runReg(["add", entry.shellKey, "/ve", "/d", entry.label, "/f"]);
         await this.runReg(["add", entry.shellKey, "/v", "Icon", "/d", iconPath, "/f"]);
         await this.runReg(["add", entry.shellKey, "/v", "MultiSelectModel", "/d", entry.multiSelectModel, "/f"]);
+        if (entry.position) {
+          await this.runReg(["add", entry.shellKey, "/v", "Position", "/d", entry.position, "/f"]);
+        }
         await this.runReg(["add", entry.commandKey, "/ve", "/d", command, "/f"]);
       }
 

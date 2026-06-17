@@ -582,15 +582,14 @@ export function App(): JSX.Element {
     }
 
     const existingIds = new Set(files.map((item) => item.id));
-    const nextSelectedFileId = selectedFileId && existingIds.has(selectedFileId) ? selectedFileId : files[0].id;
-    if (selectedFileId !== nextSelectedFileId) {
-      setSelectedFileId(nextSelectedFileId);
+    const nextSelectedFileId = selectedFileId && existingIds.has(selectedFileId) ? selectedFileId : undefined;
+    if (selectedFileId && !nextSelectedFileId) {
+      setSelectedFileId(undefined);
     }
 
     setSelectedFileIds((current) => {
       const filtered = current.filter((id) => existingIds.has(id));
-      const next = filtered.length > 0 ? filtered : nextSelectedFileId ? [nextSelectedFileId] : [];
-      return sameStringArray(current, next) ? current : next;
+      return sameStringArray(current, filtered) ? current : filtered;
     });
 
     if (selectionAnchorId && !existingIds.has(selectionAnchorId)) {
@@ -793,6 +792,29 @@ export function App(): JSX.Element {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [moveSelectedFilesByKeyboard]);
+
+  const clearFileSelection = useCallback(() => {
+    if (!selectedFileId && selectedFileIds.length === 0 && !selectionAnchorId) return false;
+    setSelectedFileId(undefined);
+    setSelectedFileIds([]);
+    setSelectionAnchorId(undefined);
+    return true;
+  }, [selectedFileId, selectedFileIds.length, selectionAnchorId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== "Escape") return;
+      if (isEditablePasteTarget(event.target)) return;
+      if (document.body.classList.contains("convert-smith-grabbing")) return;
+      if (!clearFileSelection()) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [clearFileSelection]);
 
   const selectFileItem = useCallback(
     (item: FileItem, modifiers: FileSelectionModifiers = {}) => {
@@ -1591,7 +1613,7 @@ export function App(): JSX.Element {
         <CompactWorkspace
           files={files}
           displayFiles={displayFiles}
-          selectedFileId={selectedFile?.id}
+          selectedFileId={selectedFileId}
           selectedFileIds={selectedFileIds}
           sortMode={sortMode}
           task={compactTask}
@@ -1714,7 +1736,7 @@ export function App(): JSX.Element {
           files={files}
           displayFiles={displayFiles}
           sortMode={sortMode}
-          selectedFileId={selectedFile?.id}
+          selectedFileId={selectedFileId}
           selectedFileIds={selectedFileIds}
           isDragging={isDragging}
           clearFilesAfterSuccess={clearFilesAfterSuccess}

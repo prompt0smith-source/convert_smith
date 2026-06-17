@@ -1,12 +1,12 @@
 {
   "name": "convert-smith",
-  "version": "0.1.8",
+  "version": "1.0.0",
   "description": "Local-first Electron file conversion app that creates genuinely usable output formats.",
   "main": "dist-electron/main/main.js",
   "type": "module",
   "private": true,
   "author": "JINKYU YOO",
-  "copyright": "Copyright © 2026 JINKYU YOO",
+  "copyright": "Copyright (C) 2026 JINKYU YOO",
   "scripts": {
     "start": "npm run build && node scripts/start-electron.mjs",
     "dev": "npm run electron:dev",
@@ -49,7 +49,7 @@
   "build": {
     "appId": "com.convertsmith.app",
     "productName": "Convert Smith",
-    "copyright": "Copyright © 2026 JINKYU YOO",
+    "copyright": "Copyright (C) 2026 JINKYU YOO",
     "icon": "build/icon",
     "directories": {
       "output": "release"
