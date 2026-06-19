@@ -7,7 +7,7 @@ import type {
 } from "pdf-lib";
 import type { PdfEditorEdit } from "../types/conversion.js";
 
-export type NativePdfEditMode = "native_text_edit" | "surface_overlay_edit" | "failed";
+export type NativePdfEditMode = "native_text_edit" | "failed";
 
 export type NativePdfEditFallbackReason =
   | "image_only_pdf"
@@ -63,6 +63,8 @@ export interface NativePdfTextSpan {
   encodedStart: number;
   encodedEnd: number;
   encodedBytes: Uint8Array;
+  textEncoding: "simple_ansi" | "to_unicode_cmap";
+  unicodeToBytes?: Map<string, Uint8Array>;
 }
 
 export interface NativePdfEditCapability {
@@ -137,9 +139,17 @@ export interface PdfFontInfo {
   isEmbedded: boolean;
   isSubset: boolean;
   supportsSimpleAnsiText: boolean;
+  supportsToUnicodeEncoding: boolean;
+  toUnicodeMap?: PdfUnicodeCMap;
 }
 
 export type PdfFontMap = Map<string, PdfFontInfo>;
+
+export interface PdfUnicodeCMap {
+  codeToText: Map<string, string>;
+  textToCode: Map<string, Uint8Array>;
+  codeByteLengths: number[];
+}
 
 export type PdfMatrix = [number, number, number, number, number, number];
 

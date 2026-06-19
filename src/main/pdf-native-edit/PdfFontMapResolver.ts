@@ -1,5 +1,6 @@
-import { PDFArray, PDFDict, PDFName, PDFStream } from "pdf-lib";
+import { decodePDFRawStream, PDFArray, PDFContentStream, PDFDict, PDFName, PDFRawStream, PDFStream } from "pdf-lib";
 import type { ParsedPdfContentStream, PdfFontInfo, PdfFontMap } from "./types.js";
+import { parseToUnicodeCMap } from "./PdfToUnicodeCMap.js";
 
 export class PdfFontMapResolver {
   resolve(streams: ParsedPdfContentStream[]): Map<number, PdfFontMap> {
@@ -30,7 +31,9 @@ export class PdfFontMapResolver {
       const baseFont = readName(fontObject, "BaseFont") || readName(descriptor, "FontName");
       const subtype = readName(fontObject, "Subtype");
       const encoding = this.readEncoding(fontObject);
-      const hasToUnicode = Boolean(fontObject.lookupMaybe(PDFName.of("ToUnicode"), PDFStream));
+      const toUnicodeStream = fontObject.lookupMaybe(PDFName.of("ToUnicode"), PDFStream);
+      const toUnicodeMap = toUnicodeStream ? parseToUnicodeCMap(this.decodeStream(toUnicodeStream)) : undefined;
+      const hasToUnicode = Boolean(toUnicodeMap);
       const isEmbedded = Boolean(
         descriptor?.lookupMaybe(PDFName.of("FontFile"), PDFStream) ||
           descriptor?.lookupMaybe(PDFName.of("FontFile2"), PDFStream) ||
@@ -47,7 +50,9 @@ export class PdfFontMapResolver {
         hasToUnicode,
         isEmbedded,
         isSubset,
-        supportsSimpleAnsiText: this.supportsSimpleAnsiText({ subtype, encoding, baseFont, isSubset })
+        supportsSimpleAnsiText: this.supportsSimpleAnsiText({ subtype, encoding, baseFont, isSubset }),
+        supportsToUnicodeEncoding: Boolean(toUnicodeMap?.textToCode.size),
+        toUnicodeMap
       });
     }
 
@@ -85,6 +90,16 @@ export class PdfFontMapResolver {
     if (subtype === "Type0") return false;
     if (encoding && !["WinAnsiEncoding", "MacRomanEncoding", "StandardEncoding"].includes(encoding)) return false;
     return Boolean(subtype === "Type1" || subtype === "TrueType" || baseFont);
+  }
+
+  private decodeStream(stream: PDFStream): Uint8Array {
+    if (stream instanceof PDFRawStream) {
+      return decodePDFRawStream(stream).decode();
+    }
+    if (stream instanceof PDFContentStream) {
+      return stream.getUnencodedContents();
+    }
+    return stream.getContents();
   }
 }
 

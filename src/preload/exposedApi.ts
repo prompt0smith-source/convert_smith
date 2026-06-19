@@ -30,6 +30,7 @@ export interface ConvertSmithApi {
   getPdfInfo(path: string): Promise<PdfDocumentInfo>;
   startPdfTool(payload: StartPdfToolPayload): Promise<PdfToolJob>;
   getPdfEditorTextLayer(path: string): Promise<PdfEditorTextLayer>;
+  previewPdfEditorTextEdits(payload: StartPdfEditorSavePayload): Promise<PdfEditorSaveResult>;
   savePdfEditorTextEdits(payload: StartPdfEditorSavePayload): Promise<PdfEditorSaveResult>;
   openPdfEditorWindow(payload: PdfEditorWindowOpenPayload): Promise<boolean>;
   getPdfEditorWindowContext(token: string): Promise<PdfEditorWindowContext>;

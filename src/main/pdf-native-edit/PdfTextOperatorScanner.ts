@@ -1,7 +1,8 @@
-import type { NativePdfTextSpan, ParsedPdfContentStream, PdfToken } from "./types.js";
+import { decodeBytesWithCMap } from "./PdfToUnicodeCMap.js";
+import type { NativePdfTextSpan, ParsedPdfContentStream, PdfFontInfo, PdfFontMap, PdfToken } from "./types.js";
 
 export class PdfTextOperatorScanner {
-  scan(streams: ParsedPdfContentStream[]): NativePdfTextSpan[] {
+  scan(streams: ParsedPdfContentStream[], pageFonts: Map<number, PdfFontMap> = new Map()): NativePdfTextSpan[] {
     const spans: NativePdfTextSpan[] = [];
     const pageSourceIndexes = new Map<number, number>();
 
@@ -10,7 +11,10 @@ export class PdfTextOperatorScanner {
         if (operator.operator !== "Tj" && operator.operator !== "TJ") continue;
 
         const nextSourceIndex = pageSourceIndexes.get(stream.pageNumber) ?? 0;
-        const span = this.createSpan(stream, operator.operatorIndex, nextSourceIndex);
+        const fontInfo = operator.fontResourceName
+          ? pageFonts.get(stream.pageNumber)?.get(operator.fontResourceName)
+          : undefined;
+        const span = this.createSpan(stream, operator.operatorIndex, nextSourceIndex, fontInfo);
         if (!span) continue;
 
         spans.push(span);
@@ -24,13 +28,14 @@ export class PdfTextOperatorScanner {
   private createSpan(
     stream: ParsedPdfContentStream,
     operatorIndex: number,
-    sourceIndex: number
+    sourceIndex: number,
+    fontInfo?: PdfFontInfo
   ): NativePdfTextSpan | undefined {
     const operator = stream.operators[operatorIndex];
     if (operator.operator === "Tj") {
       const stringToken = operator.operands.find((token) => token.type === "literalString" || token.type === "hexString");
-      if (!stringToken?.bytes || stringToken.decodedText === undefined) return undefined;
-      const decodedText = stringToken.decodedText.normalize("NFC");
+      if (!stringToken?.bytes) return undefined;
+      const decodedText = decodeTextBytes(stringToken.bytes, stringToken.decodedText, fontInfo);
       if (!decodedText.trim()) return undefined;
 
       return {
@@ -53,13 +58,20 @@ export class PdfTextOperatorScanner {
         encodedKind: stringToken.type === "hexString" ? "hex" : "literal",
         encodedStart: stringToken.start,
         encodedEnd: stringToken.end,
-        encodedBytes: stringToken.bytes
+        encodedBytes: stringToken.bytes,
+        textEncoding: fontInfo?.toUnicodeMap ? "to_unicode_cmap" : "simple_ansi",
+        unicodeToBytes: fontInfo?.toUnicodeMap?.textToCode
       };
     }
 
     const arrayToken = operator.operands.find((token) => token.type === "array");
     const stringTokens = arrayToken?.items?.filter((token) => token.type === "literalString" || token.type === "hexString") ?? [];
-    const decodedText = stringTokens.map((token) => token.decodedText || "").join("").normalize("NFC");
+    const encodedBytes = concatTokenBytes(stringTokens);
+    const decodedText = decodeTextBytes(
+      encodedBytes,
+      stringTokens.map((token) => token.decodedText || "").join(""),
+      fontInfo
+    );
     if (!decodedText.trim()) return undefined;
 
     return {
@@ -80,11 +92,20 @@ export class PdfTextOperatorScanner {
       estimatedWidth: estimateTextWidth(decodedText, operator.fontSize),
       estimatedHeight: operator.estimatedHeight || operator.fontSize || 0,
       encodedKind: "array",
-      encodedStart: firstTokenStart(stringTokens, arrayToken),
-      encodedEnd: lastTokenEnd(stringTokens, arrayToken),
-      encodedBytes: concatTokenBytes(stringTokens)
+      encodedStart: arrayToken ? arrayToken.start + 1 : firstTokenStart(stringTokens),
+      encodedEnd: arrayToken ? Math.max(arrayToken.start + 1, arrayToken.end - 1) : lastTokenEnd(stringTokens),
+      encodedBytes,
+      textEncoding: fontInfo?.toUnicodeMap ? "to_unicode_cmap" : "simple_ansi",
+      unicodeToBytes: fontInfo?.toUnicodeMap?.textToCode
     };
   }
+}
+
+function decodeTextBytes(bytes: Uint8Array, fallbackText: string | undefined, fontInfo?: PdfFontInfo): string {
+  if (fontInfo?.toUnicodeMap) {
+    return decodeBytesWithCMap(bytes, fontInfo.toUnicodeMap);
+  }
+  return String(fallbackText || "").normalize("NFC");
 }
 
 function estimateTextWidth(text: string, fontSize = 10): number {

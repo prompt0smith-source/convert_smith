@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { PDFName, type PDFDocument } from "pdf-lib";
+import { encodeTextWithCMap } from "./PdfToUnicodeCMap.js";
 import type {
   NativePdfEditCapability,
   NativePdfTextSpan,
@@ -15,9 +16,6 @@ export class PdfContentStreamWriter {
       }
       const replacementText = String(capability.edit.replacementText || "").normalize("NFC");
       const replacementBytes = encodeReplacementToken(capability.matchedSpan, replacementText);
-      if (replacementBytes.length > capability.matchedSpan.encodedEnd - capability.matchedSpan.encodedStart) {
-        throw new Error("새 문자열 token이 원본 token보다 길어 직접 patch를 중단했습니다.");
-      }
 
       return {
         pageNumber: capability.matchedSpan.pageNumber,
@@ -100,13 +98,32 @@ function validatePatchRanges(patches: PdfContentStreamPatch[]): void {
 }
 
 function encodeReplacementToken(span: NativePdfTextSpan, replacementText: string): Uint8Array {
+  if (span.textEncoding === "to_unicode_cmap") {
+    const bytes = encodeReplacementWithUnicodeMap(span, replacementText);
+    return sourceToBytes(`<${bytesToHex(bytes)}>`);
+  }
   if (span.encodedKind === "hex") {
     return sourceToBytes(`<${bytesToHex(ansiBytes(replacementText))}>`);
   }
   if (span.encodedKind === "literal") {
     return sourceToBytes(`(${escapeLiteralString(replacementText)})`);
   }
-  throw new Error("TJ 배열 텍스트는 직접 patch 대상이 아닙니다.");
+  if (span.encodedKind === "array") {
+    return sourceToBytes(`(${escapeLiteralString(replacementText)})`);
+  }
+  throw new Error("지원하지 않는 텍스트 token 형식입니다.");
+}
+
+function encodeReplacementWithUnicodeMap(span: NativePdfTextSpan, replacementText: string): Uint8Array {
+  if (replacementText.length === 0) return new Uint8Array();
+  const cmap = span.unicodeToBytes
+    ? { codeToText: new Map<string, string>(), textToCode: span.unicodeToBytes, codeByteLengths: [] }
+    : undefined;
+  const bytes = cmap ? encodeTextWithCMap(replacementText, cmap) : undefined;
+  if (!bytes) {
+    throw new Error("새 문자열을 현재 PDF 폰트 CMap으로 encoding할 수 없습니다.");
+  }
+  return bytes;
 }
 
 function ansiBytes(value: string): Uint8Array {

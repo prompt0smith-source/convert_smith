@@ -1,4 +1,5 @@
 import type { PdfEditorEdit } from "../types/conversion.js";
+import { encodeTextWithCMap } from "./PdfToUnicodeCMap.js";
 import { PdfTextSpanMatcher } from "./PdfTextSpanMatcher.js";
 import type {
   NativePdfEditCapability,
@@ -25,13 +26,10 @@ export class PdfEditCapabilityService {
   ): NativePdfEditCapability {
     const replacementText = String(edit.replacementText || "").normalize("NFC");
 
-    if (edit.action !== "replace") {
-      return this.reject(edit, "non_replace_edit", "추가/삭제 편집은 기존 표면 편집 방식으로 저장합니다.");
+    if (edit.action !== "replace" && edit.action !== "delete") {
+      return this.reject(edit, "non_replace_edit", "텍스트 추가는 기존 텍스트 치환 대상이 아닙니다.");
     }
-    if (!replacementText.trim()) {
-      return this.reject(edit, "non_replace_edit", "빈 문자열 치환은 삭제 편집과 같아 표면 편집으로 저장합니다.");
-    }
-    if (/\r|\n/.test(replacementText)) {
+    if (edit.action === "replace" && /\r|\n/.test(replacementText)) {
       return this.reject(edit, "replacement_too_long", "여러 줄 치환은 원래 텍스트 객체에 안전하게 넣지 않습니다.");
     }
     if (hasGeometryChange(edit)) {
@@ -44,12 +42,6 @@ export class PdfEditCapabilityService {
     }
 
     const span = match.span;
-    if (span.operator !== "Tj") {
-      return this.reject(edit, "multi_operator_text", "TJ 배열로 나뉜 텍스트는 1차 네이티브 엔진에서 직접 수정하지 않습니다.", span);
-    }
-    if (span.encodedKind === "array") {
-      return this.reject(edit, "multi_operator_text", "여러 문자열 조각으로 구성된 텍스트입니다.", span);
-    }
     if (hasComplexTransform(span.transformMatrix)) {
       return this.reject(edit, "rotated_or_complex_transform", "회전/기울임/복합 변환이 있는 텍스트입니다.", span);
     }
@@ -64,19 +56,30 @@ export class PdfEditCapabilityService {
     if (!fontInfo.hasToUnicode && !fontInfo.supportsSimpleAnsiText) {
       return this.reject(edit, "no_to_unicode_map", "ToUnicode CMap이 없고 단순 ANSI 폰트로도 판단되지 않습니다.", span);
     }
+
+    const originalText = String(edit.originalText || "").normalize("NFC");
+    if (fontInfo.supportsToUnicodeEncoding && fontInfo.toUnicodeMap) {
+      if (edit.action === "replace" && encodeTextWithCMap(replacementText, fontInfo.toUnicodeMap) === undefined) {
+        return this.reject(
+          edit,
+          "unsupported_font_encoding",
+          "새 텍스트에 현재 PDF 폰트 subset에 없는 glyph가 포함되어 있습니다.",
+          span
+        );
+      }
+      return {
+        edit,
+        directEditable: true,
+        matchedSpan: span
+      };
+    }
+
     if (fontInfo.isSubset || !fontInfo.supportsSimpleAnsiText) {
       return this.reject(edit, "unsupported_font_encoding", "subset 또는 복합 폰트라 새 문자열의 glyph encoding을 보장하지 않습니다.", span);
     }
 
-    const originalText = String(edit.originalText || "").normalize("NFC");
-    if (!isSimpleAnsi(originalText) || !isSimpleAnsi(replacementText)) {
-      return this.reject(edit, "unsupported_font_encoding", "1차 네이티브 엔진은 단순 ANSI 텍스트만 직접 치환합니다.", span);
-    }
-    if (replacementText.length > originalText.length) {
-      return this.reject(edit, "replacement_too_long", "새 텍스트가 원래 텍스트보다 길어 레이아웃 변형 위험이 있습니다.", span);
-    }
-    if (ansiBytes(replacementText).length > span.encodedBytes.length) {
-      return this.reject(edit, "replacement_too_long", "새 문자열을 같은 encoding으로 쓰면 원래 byte 길이를 초과합니다.", span);
+    if (!isSimpleAnsi(originalText) || (edit.action === "replace" && !isSimpleAnsi(replacementText))) {
+      return this.reject(edit, "unsupported_font_encoding", "단순 ANSI 폰트에서 표현할 수 없는 텍스트입니다.", span);
     }
 
     return {
@@ -126,6 +129,3 @@ function isSimpleAnsi(value: string): boolean {
   });
 }
 
-function ansiBytes(value: string): Uint8Array {
-  return new Uint8Array(Array.from(value, (char) => char.charCodeAt(0) & 0xff));
-}

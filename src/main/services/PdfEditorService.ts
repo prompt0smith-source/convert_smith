@@ -1,7 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
 import { applyLocalFontMatches, warmPdfPageFonts } from "./LocalFontMatchService.js";
 import { extractPdfReadingOrderFragments } from "./PdfReadingOrderService.js";
@@ -10,13 +8,6 @@ import { FileSignatureService } from "./FileSignatureService.js";
 import { ValidationService } from "./ValidationService.js";
 import { DependencyService } from "./DependencyService.js";
 import { NativePdfTextEditEngine } from "../pdf-native-edit/NativePdfTextEditEngine.js";
-import { PdfEditVerificationService } from "../pdf-native-edit/PdfEditVerificationService.js";
-import {
-  containsNonWinAnsi,
-  parsePdfEditorRgb,
-  PdfEditorFontService,
-  wrapPdfEditorText
-} from "./PdfEditorFontService.js";
 import type {
   PdfEditorEdit,
   PdfEditorPageSize,
@@ -34,9 +25,7 @@ export class PdfEditorService {
   private readonly dependencies = new DependencyService();
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
-  private readonly fonts = new PdfEditorFontService();
   private readonly nativeTextEdit = new NativePdfTextEditEngine();
-  private readonly editVerification = new PdfEditVerificationService();
 
   async getTextLayer(inputPath: string): Promise<PdfEditorTextLayer> {
     const sourcePath = await this.validatePdfInput(inputPath);
@@ -115,92 +104,13 @@ export class PdfEditorService {
       };
     }
 
-    const pdfDoc = await PDFDocument.load(await readFile(sourcePath), { ignoreEncryption: false });
-    pdfDoc.registerFontkit(fontkit);
-    this.fonts.reset();
-
-    let editedCount = 0;
-    let deletedCount = 0;
-    let addedCount = 0;
-    const warnings = [
-      ...nativeResult.warnings,
-      "PDF 편집 저장은 원본 글꼴, 글자 크기, 줄 흐름을 유지할 수 없는 경우 결과 파일을 만들기 전에 중단합니다."
-    ];
-
-    for (const edit of edits) {
-      const page = pdfDoc.getPage(edit.pageNumber - 1);
-      const pageHeight = page.getHeight();
-      const x = clamp(edit.x, 0, page.getWidth());
-      const yTop = clamp(edit.y, 0, pageHeight);
-      const width = clamp(edit.width, 1, page.getWidth());
-      const height = clamp(edit.height, Math.max(6, edit.fontSize * 0.9), pageHeight);
-      const pdfY = clamp(pageHeight - yTop - height, 0, pageHeight);
-      const coverX = clamp(edit.coverX ?? edit.x, 0, page.getWidth());
-      const coverYTop = clamp(edit.coverY ?? edit.y, 0, pageHeight);
-      const coverWidth = clamp(edit.coverWidth ?? edit.width, 1, page.getWidth());
-      const coverHeight = clamp(edit.coverHeight ?? edit.height, Math.max(6, edit.fontSize * 0.9), pageHeight);
-      const coverPdfY = clamp(pageHeight - coverYTop - coverHeight, 0, pageHeight);
-      const fontSize = clamp(edit.fontSize || 10, 5, 96);
-      const replacement = (edit.replacementText || "").normalize("NFC");
-
-      if (edit.action === "replace" || edit.action === "delete") {
-        page.drawRectangle({
-          x: Math.max(0, coverX - 1),
-          y: Math.max(0, coverPdfY - 1),
-          width: Math.min(page.getWidth() - Math.max(0, coverX - 1), coverWidth + 2),
-          height: Math.min(pageHeight - Math.max(0, coverPdfY - 1), coverHeight + 2),
-          color: rgb(1, 1, 1)
-        });
-      }
-
-      if (edit.action !== "delete" && replacement.trim()) {
-        const fontChoice = await this.fonts.resolveFont(pdfDoc, replacement, edit.fontFamily);
-
-        if (edit.action === "replace") {
-          this.assertSafeReplacement(edit, replacement, fontChoice.embedded, fontChoice.font, width, height, fontSize);
-        } else if (!fontChoice.embedded && containsNonWinAnsi(replacement)) {
-          throw new Error(
-            "로컬 서체를 찾지 못해 PDF 저장을 중단했습니다. 글씨체가 바뀌는 결과를 만들지 않기 위해 원본 파일은 변경하지 않았습니다."
-          );
-        }
-
-        const lines =
-          edit.action === "replace"
-            ? [replacement]
-            : wrapPdfEditorText(fontChoice.font, replacement, Math.max(1, width), fontSize);
-        const lineHeight = fontSize * 1.18;
-        const color = parsePdfEditorRgb(edit.color);
-
-        lines.forEach((line, index) => {
-          page.drawText(line, {
-            x,
-            y: clamp(pdfY + height - fontSize - index * lineHeight, 0, pageHeight),
-            size: fontSize,
-            font: fontChoice.font,
-            color
-          });
-        });
-      }
-
-      if (edit.action === "add") addedCount += 1;
-      if (edit.action === "delete") deletedCount += 1;
-      if (edit.action === "replace") editedCount += 1;
-    }
-
-    await writeFile(outputPath, await pdfDoc.save({ useObjectStreams: false }));
-    const verification = await this.editVerification.verify({ outputPath });
-    if (!verification.ok || !(await this.signatures.isPdf(outputPath))) {
-      throw new Error(verification.details ? `${verification.message}\n${verification.details}` : verification.message);
-    }
-
-    return {
-      outputPath,
-      editedCount,
-      deletedCount,
-      addedCount,
-      warnings: Array.from(new Set(warnings)),
-      mode: "surface_overlay_edit"
-    };
+    throw new Error(
+      [
+        "PDF 내부 텍스트를 직접 수정하지 못해 저장을 중단했습니다.",
+        "기존 텍스트 위를 흰 영역으로 가리고 새 텍스트를 얹는 방식은 더 이상 사용하지 않습니다.",
+        ...nativeResult.warnings
+      ].join("\n")
+    );
   }
 
   private normalizeEdits(edits: PdfEditorEdit[]): PdfEditorEdit[] {
@@ -229,47 +139,6 @@ export class PdfEditorService {
         }
       ];
     });
-  }
-
-  private assertSafeReplacement(
-    edit: PdfEditorEdit,
-    replacement: string,
-    fontEmbedded: boolean,
-    font: PDFFont,
-    width: number,
-    height: number,
-    fontSize: number
-  ): void {
-    if (!fontEmbedded) {
-      throw new Error(
-        "원본 글꼴과 매칭되는 로컬 서체를 찾지 못해 PDF 저장을 중단했습니다. 글씨체가 바뀌는 결과를 만들지 않기 위해 원본 파일은 변경하지 않았습니다."
-      );
-    }
-
-    if (/\r|\n/.test(replacement)) {
-      throw new Error(
-        "한 줄 텍스트를 여러 줄로 바꾸면 원본 줄 간격이 틀어질 수 있어 PDF 저장을 중단했습니다. 텍스트 추가 기능으로 별도 줄을 추가해주세요."
-      );
-    }
-
-    const measuredWidth = font.widthOfTextAtSize(replacement, fontSize);
-    if (measuredWidth > width * 1.02) {
-      throw new Error(
-        "수정한 텍스트가 원본 텍스트 영역보다 길어 글자 간격이나 형태가 틀어질 수 있습니다. 저장을 중단했고 원본 파일은 변경하지 않았습니다."
-      );
-    }
-
-    if (fontSize > height * 1.35) {
-      throw new Error(
-        "원본 텍스트 영역의 높이를 안전하게 판단하지 못해 PDF 저장을 중단했습니다. 글씨 형태가 틀어지는 결과를 만들지 않았습니다."
-      );
-    }
-
-    if (edit.originalText && containsNonWinAnsi(edit.originalText) && containsNonWinAnsi(replacement) && !edit.fontFamily) {
-      throw new Error(
-        "원본 한글 글꼴 정보를 확인하지 못해 PDF 저장을 중단했습니다. 글씨체가 바뀌는 결과를 만들지 않기 위해 원본 파일은 변경하지 않았습니다."
-      );
-    }
   }
 
   private async validatePdfInput(filePath: string): Promise<string> {
@@ -329,11 +198,6 @@ async function exists(filePath: string): Promise<boolean> {
 function finiteNumber(value: unknown, fallback: number): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.max(min, Math.min(max, value));
 }
 
 function roundPoint(value: number): number {
