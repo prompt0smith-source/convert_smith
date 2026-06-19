@@ -208,12 +208,15 @@ export interface StartPdfEditorSavePayload {
   edits: PdfEditorEdit[];
 }
 
+export type PdfEditorSaveMode = "native_text_edit" | "surface_overlay_edit" | "failed";
+
 export interface PdfEditorSaveResult {
   outputPath: string;
   editedCount: number;
   deletedCount: number;
   addedCount: number;
   warnings: string[];
+  mode: PdfEditorSaveMode;
 }
 
 export interface PdfEditorWindowOpenPayload {

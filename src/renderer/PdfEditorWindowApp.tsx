@@ -461,7 +461,13 @@ export function PdfEditorWindowApp(): JSX.Element {
       {result && (
         <div className="absolute bottom-4 right-4 z-40 max-w-[380px] rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-xl">
           <strong className="mb-1 block">수정본 저장 완료</strong>
+          <p className="mb-1 text-xs font-semibold">{getSaveModeMessage(result)}</p>
           <p className="truncate text-xs">{result.outputPath}</p>
+          {result.warnings.slice(0, 2).map((warning) => (
+            <p key={warning} className="mt-1 line-clamp-2 text-xs leading-5 text-emerald-800">
+              {warning}
+            </p>
+          ))}
         </div>
       )}
     </div>
@@ -564,6 +570,16 @@ function getDetailString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return undefined;
+}
+
+function getSaveModeMessage(result: PdfEditorSaveResult): string {
+  if (result.mode === "native_text_edit") {
+    return "PDF 내부 텍스트를 직접 수정했습니다.";
+  }
+  if (result.mode === "surface_overlay_edit") {
+    return "이 PDF는 내부 텍스트 직접 수정이 어려워 표면 편집 방식으로 저장했습니다.";
+  }
+  return "PDF 편집 저장 상태를 확인하지 못했습니다.";
 }
 
 function InlineEditableText({

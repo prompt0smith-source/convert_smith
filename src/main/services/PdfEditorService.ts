@@ -9,6 +9,8 @@ import { applyPdfTextColors } from "./PdfTextColorService.js";
 import { FileSignatureService } from "./FileSignatureService.js";
 import { ValidationService } from "./ValidationService.js";
 import { DependencyService } from "./DependencyService.js";
+import { NativePdfTextEditEngine } from "../pdf-native-edit/NativePdfTextEditEngine.js";
+import { PdfEditVerificationService } from "../pdf-native-edit/PdfEditVerificationService.js";
 import {
   containsNonWinAnsi,
   parsePdfEditorRgb,
@@ -33,6 +35,8 @@ export class PdfEditorService {
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly fonts = new PdfEditorFontService();
+  private readonly nativeTextEdit = new NativePdfTextEditEngine();
+  private readonly editVerification = new PdfEditVerificationService();
 
   async getTextLayer(inputPath: string): Promise<PdfEditorTextLayer> {
     const sourcePath = await this.validatePdfInput(inputPath);
@@ -99,6 +103,18 @@ export class PdfEditorService {
       "pdf"
     );
 
+    const nativeResult = await this.nativeTextEdit.trySave({ sourcePath, outputPath, edits });
+    if (nativeResult.mode === "native_text_edit" && nativeResult.outputPath) {
+      return {
+        outputPath: nativeResult.outputPath,
+        editedCount: nativeResult.editedCount,
+        deletedCount: nativeResult.deletedCount,
+        addedCount: nativeResult.addedCount,
+        warnings: Array.from(new Set(nativeResult.warnings)),
+        mode: nativeResult.mode
+      };
+    }
+
     const pdfDoc = await PDFDocument.load(await readFile(sourcePath), { ignoreEncryption: false });
     pdfDoc.registerFontkit(fontkit);
     this.fonts.reset();
@@ -107,6 +123,7 @@ export class PdfEditorService {
     let deletedCount = 0;
     let addedCount = 0;
     const warnings = [
+      ...nativeResult.warnings,
       "PDF 편집 저장은 원본 글꼴, 글자 크기, 줄 흐름을 유지할 수 없는 경우 결과 파일을 만들기 전에 중단합니다."
     ];
 
@@ -171,8 +188,9 @@ export class PdfEditorService {
     }
 
     await writeFile(outputPath, await pdfDoc.save({ useObjectStreams: false }));
-    if (!(await this.signatures.isPdf(outputPath))) {
-      throw new Error("PDF 편집 결과 검증에 실패했습니다. 결과 파일이 정상 PDF가 아닙니다.");
+    const verification = await this.editVerification.verify({ outputPath });
+    if (!verification.ok || !(await this.signatures.isPdf(outputPath))) {
+      throw new Error(verification.details ? `${verification.message}\n${verification.details}` : verification.message);
     }
 
     return {
@@ -180,7 +198,8 @@ export class PdfEditorService {
       editedCount,
       deletedCount,
       addedCount,
-      warnings: Array.from(new Set(warnings))
+      warnings: Array.from(new Set(warnings)),
+      mode: "surface_overlay_edit"
     };
   }
 
