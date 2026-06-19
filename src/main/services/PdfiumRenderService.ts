@@ -1,7 +1,5 @@
-import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
 import type { BrowserWindow } from "electron";
@@ -50,7 +48,6 @@ export class PdfiumRenderService {
     const pageCount = sourcePdf.getPageCount();
     const safePageNumber = Math.max(1, Math.min(pageCount, Math.trunc(pageNumber) || 1));
     const pageIndex = safePageNumber - 1;
-    const tempDir = await mkdtemp(path.join(tmpdir(), "convert-smith-pdfium-preview-"));
     const win = new electron.BrowserWindow({
       show: false,
       width: 1200,
@@ -67,13 +64,13 @@ export class PdfiumRenderService {
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
     try {
-      const singlePagePath = await this.writeSinglePagePdf(sourcePdf, pageIndex, tempDir);
       const sourcePage = sourcePdf.getPage(pageIndex);
       const pngBuffer = await this.captureSinglePageWithRetry(
         electron,
         win,
-        singlePagePath,
+        inputPath,
         {
+          pageNumber: safePageNumber,
           width: sourcePage.getWidth(),
           height: sourcePage.getHeight(),
           rotation: sourcePage.getRotation().angle,
@@ -90,7 +87,6 @@ export class PdfiumRenderService {
         }
       }
       win.destroy();
-      await rm(tempDir, { recursive: true, force: true });
     }
   }
 
@@ -110,7 +106,6 @@ export class PdfiumRenderService {
     const sourceBytes = await readFile(inputPath);
     const sourcePdf = await PDFDocument.load(sourceBytes);
     const pageCount = sourcePdf.getPageCount();
-    const tempDir = await mkdtemp(path.join(tmpdir(), "convert-smith-pdfium-"));
     const win = new electron.BrowserWindow({
       show: false,
       width: 1200,
@@ -134,13 +129,13 @@ export class PdfiumRenderService {
           `PDF ${pageNumber}/${pageCount}페이지를 원본 렌더러로 이미지화하고 있습니다.`
         );
 
-        const singlePagePath = await this.writeSinglePagePdf(sourcePdf, pageIndex, tempDir);
         const sourcePage = sourcePdf.getPage(pageIndex);
         const pngBuffer = await this.captureSinglePageWithRetry(
           electron,
           win,
-          singlePagePath,
+          inputPath,
           {
+            pageNumber,
             width: sourcePage.getWidth(),
             height: sourcePage.getHeight(),
             rotation: sourcePage.getRotation().angle,
@@ -165,24 +160,14 @@ export class PdfiumRenderService {
         }
       }
       win.destroy();
-      await rm(tempDir, { recursive: true, force: true });
     }
-  }
-
-  private async writeSinglePagePdf(sourcePdf: PDFDocument, pageIndex: number, tempDir: string): Promise<string> {
-    const singlePagePdf = await PDFDocument.create();
-    const [copiedPage] = await singlePagePdf.copyPages(sourcePdf, [pageIndex]);
-    singlePagePdf.addPage(copiedPage);
-    const outputPath = path.join(tempDir, `page-${String(pageIndex + 1).padStart(4, "0")}.pdf`);
-    await writeFile(outputPath, await singlePagePdf.save());
-    return outputPath;
   }
 
   private async captureSinglePage(
     electron: ElectronModule,
     win: BrowserWindow,
-    singlePagePath: string,
-    page: { width: number; height: number; rotation: number; scale: 1 | 2 | 3 },
+    pdfPath: string,
+    page: { pageNumber: number; width: number; height: number; rotation: number; scale: 1 | 2 | 3 },
     attempt: number
   ): Promise<Buffer> {
     const isSideways = Math.abs(page.rotation) % 180 === 90;
@@ -190,7 +175,7 @@ export class PdfiumRenderService {
     const displayHeight = isSideways ? page.width : page.height;
     const viewport = this.getViewportSize(displayWidth, displayHeight, page.scale);
     const zoomPercent = page.scale * 75;
-    const url = `${pathToFileURL(singlePagePath).toString()}#page=1&zoom=${zoomPercent}&toolbar=0&navpanes=0`;
+    const url = `${pathToFileURL(pdfPath).toString()}#page=${page.pageNumber}&zoom=${zoomPercent}&toolbar=0&navpanes=0`;
 
     await win.loadURL(url);
     if (!win.webContents.debugger.isAttached()) {
@@ -217,8 +202,8 @@ export class PdfiumRenderService {
   private async captureSinglePageWithRetry(
     electron: ElectronModule,
     win: BrowserWindow,
-    singlePagePath: string,
-    page: { width: number; height: number; rotation: number; scale: 1 | 2 | 3 }
+    pdfPath: string,
+    page: { pageNumber: number; width: number; height: number; rotation: number; scale: 1 | 2 | 3 }
   ): Promise<Buffer> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_RENDER_ATTEMPTS; attempt += 1) {
@@ -226,7 +211,7 @@ export class PdfiumRenderService {
         if (attempt > 1) {
           await this.delay(450 * attempt);
         }
-        return await this.captureSinglePage(electron, win, singlePagePath, page, attempt);
+        return await this.captureSinglePage(electron, win, pdfPath, page, attempt);
       } catch (error) {
         lastError = error;
       }

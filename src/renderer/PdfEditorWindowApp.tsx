@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, Minus, Plus, Save, Trash2, X } from "lucide-react";
+import { ExternalLink, Minus, Plus, Save, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
@@ -91,7 +91,7 @@ export function PdfEditorWindowApp(): JSX.Element {
       .then((preview) => {
         if (cancelled) return;
         if (preview.previewType !== "pdf_page" || !preview.dataUrl) {
-          throw new Error("PDF 페이지를 자체 Viewer로 렌더링하지 못했습니다.");
+          throw new Error(buildPreviewErrorMessage(preview));
         }
         setPagePreview(preview);
       })
@@ -118,7 +118,11 @@ export function PdfEditorWindowApp(): JSX.Element {
   );
   const currentPageAdditions = additions.filter((item) => item.pageNumber === selectedPage);
   const coveredItems = currentPageItems.filter(
-    (item) => deletedIds.has(item.id) || drafts[item.id] !== undefined || geometryOverrides[item.id]
+    (item) =>
+      deletedIds.has(item.id) ||
+      drafts[item.id] !== undefined ||
+      geometryOverrides[item.id] ||
+      (selectedTarget?.kind === "text" && selectedTarget.id === item.id)
   );
   const changedCount = useMemo(
     () => countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides),
@@ -328,16 +332,16 @@ export function PdfEditorWindowApp(): JSX.Element {
       </div>
 
       {(isLoading || isPageLoading) && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-100/80">
-          <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700 shadow">
-            <Loader2 size={18} className="animate-spin" />
-            자체 PDF Viewer 렌더링 중입니다.
-          </div>
-        </div>
+        <PdfViewerLoadingOverlay
+          progress={isLoading ? 42 : 76}
+          message={isLoading ? "PDF 구조와 텍스트 레이어를 읽는 중입니다." : "PDF 페이지를 자체 Viewer로 렌더링 중입니다."}
+          completed={isLoading ? 0 : 1}
+          total={2}
+        />
       )}
 
       {error && (
-        <div className="absolute left-1/2 top-20 z-40 max-w-[680px] -translate-x-1/2 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-900 shadow-xl">
+        <div className="absolute left-1/2 top-20 z-40 max-w-[680px] -translate-x-1/2 whitespace-pre-wrap rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-900 shadow-xl">
           {error}
         </div>
       )}
@@ -417,6 +421,166 @@ export function PdfEditorWindowApp(): JSX.Element {
   );
 }
 
+function PdfViewerLoadingOverlay({
+  progress,
+  message,
+  completed,
+  total
+}: {
+  progress: number;
+  message: string;
+  completed: number;
+  total: number;
+}): JSX.Element {
+  const safeProgress = Math.max(0, Math.min(100, Math.round(progress)));
+  const title = "PDF Viewer 준비 중입니다";
+
+  return (
+    <div className="smith-loader-overlay smith-loader-overlay--show" role="status" aria-live="polite">
+      <div className="smith-loader-card">
+        <WaterDropLoader />
+        <div className="smith-page-loader-text" aria-hidden="true">
+          <span className="smith-page-loader-label is-animating">
+            {Array.from(title).map((char, index) => (
+              <span
+                className="smith-page-loader-char"
+                style={{ animationDelay: `${index * 36}ms` }}
+                key={`${char}-${index}`}
+              >
+                {char === " " ? "\u00a0" : char}
+              </span>
+            ))}
+          </span>
+        </div>
+        <p className="max-w-[320px] text-center text-sm leading-5 text-stone-700">{message}</p>
+        <div className="w-full">
+          <div className="mb-2 flex items-center justify-between text-xs font-semibold text-stone-600">
+            <span>진행률 {safeProgress}%</span>
+            <span>
+              {completed}/{total}
+            </span>
+          </div>
+          <div className="smith-loader-progress" aria-hidden="true">
+            <span style={{ width: `${safeProgress}%` }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WaterDropLoader(): JSX.Element {
+  return (
+    <div className="smith-water-drop-loader" aria-hidden="true">
+      <svg className="smith-water-drop-loader-svg" width="0" height="0" aria-hidden="true" focusable="false">
+        <filter id="smith-water-drop-gooey-viewer">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur" />
+          <feColorMatrix
+            in="blur"
+            mode="matrix"
+            values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 18 -7"
+            result="gooey"
+          />
+          <feBlend in="SourceGraphic" in2="gooey" />
+        </filter>
+      </svg>
+      <div className="smith-water-drop-loader-gooey" style={{ filter: 'url("#smith-water-drop-gooey-viewer")' }}>
+        <span className="smith-water-drop-loader-main" />
+        <span className="smith-water-drop-loader-orb" />
+        <span className="smith-water-drop-loader-orb-small" />
+        <span className="smith-water-drop-loader-splash smith-water-drop-loader-splash-1" />
+        <span className="smith-water-drop-loader-splash smith-water-drop-loader-splash-2" />
+        <span className="smith-water-drop-loader-splash smith-water-drop-loader-splash-3" />
+        <span className="smith-water-drop-loader-merge smith-water-drop-loader-merge-1" />
+        <span className="smith-water-drop-loader-merge smith-water-drop-loader-merge-2" />
+        <span className="smith-water-drop-loader-merge smith-water-drop-loader-merge-3" />
+      </div>
+      <span className="smith-sr-only">Loading</span>
+    </div>
+  );
+}
+
+function buildPreviewErrorMessage(preview: FilePreview): string {
+  const details = preview.details || {};
+  const reason = getDetailString(details.error);
+  const pdfiumReason = getDetailString(details.pdfiumError);
+  const logPath = getDetailString(details.logPath);
+  return [
+    "PDF 페이지를 자체 Viewer로 렌더링하지 못했습니다.",
+    reason ? `상세: ${reason}` : undefined,
+    pdfiumReason ? `PDFium: ${pdfiumReason}` : undefined,
+    logPath ? `Debug log: ${logPath}` : undefined
+  ].filter(Boolean).join("\n");
+}
+
+function getDetailString(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+function InlineEditableText({
+  value,
+  placeholder,
+  fontSize,
+  fontFamily,
+  color,
+  onChange
+}: {
+  value: string;
+  placeholder?: string;
+  fontSize: number;
+  fontFamily?: string;
+  color?: string;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.focus();
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, []);
+
+  useEffect(() => {
+    if (!ref.current || document.activeElement === ref.current) return;
+    if (ref.current.innerText !== value) {
+      ref.current.innerText = value;
+    }
+  }, [value]);
+
+  return (
+    <div
+      ref={ref}
+      data-no-drag
+      contentEditable
+      suppressContentEditableWarning
+      role="textbox"
+      aria-label={placeholder || "PDF text"}
+      data-placeholder={placeholder}
+      className="pdf-editor-inline-editor allow-text-selection"
+      style={{
+        color: color ? `#${color.replace(/^#/, "")}` : "#111827",
+        fontFamily: fontFamily || "Malgun Gothic, Arial, sans-serif",
+        fontSize: `${Math.max(8, fontSize)}px`,
+        lineHeight: "1.05"
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onInput={(event) => onChange(event.currentTarget.innerText.replace(/\n$/, ""))}
+    >
+      {value}
+    </div>
+  );
+}
+
 function TextOverlayBox({
   item,
   geometry,
@@ -457,14 +621,12 @@ function TextOverlayBox({
     >
       {selected && !deleted ? (
         <>
-          <textarea
-            data-no-drag
+          <InlineEditableText
             value={value}
-            disabled={deleted}
-            onChange={(event) => onChange(event.target.value)}
-            className="allow-text-selection h-full w-full resize-none rounded-sm border border-emerald-500 bg-white/96 px-1 py-0 text-[inherit] leading-tight outline-none disabled:bg-rose-50 disabled:text-rose-500"
-            style={{ fontSize: `${Math.max(8, item.fontSize * zoom)}px` }}
-            autoFocus
+            fontSize={item.fontSize * zoom}
+            fontFamily={item.fontFamily}
+            color={item.color}
+            onChange={onChange}
           />
           <button
             data-no-drag
@@ -534,14 +696,12 @@ function AdditionOverlayBox({
     >
       {selected ? (
         <>
-          <textarea
-            data-no-drag
+          <InlineEditableText
             value={item.text}
-            onChange={(event) => onChange(event.target.value)}
             placeholder="텍스트 입력"
-            className="allow-text-selection h-full w-full resize-none rounded-sm border border-emerald-500 bg-white/96 px-1 py-0 leading-tight outline-none"
-            style={{ fontSize: `${Math.max(8, item.fontSize * zoom)}px` }}
-            autoFocus
+            fontSize={item.fontSize * zoom}
+            fontFamily="Malgun Gothic"
+            onChange={onChange}
           />
           <button
             data-no-drag

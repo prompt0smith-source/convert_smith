@@ -28,6 +28,7 @@ import { PdfToXlsxEngine } from "../engines/PdfToXlsxEngine.js";
 import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 import { decodeBmpToPngBuffer } from "./BmpImageService.js";
 import { PdfiumRenderService } from "./PdfiumRenderService.js";
+import { DebugLogService } from "./DebugLogService.js";
 
 type JobUpdateCallback = (job: ConversionJob) => void;
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
@@ -51,6 +52,7 @@ export class ConversionService {
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly pdfium = new PdfiumRenderService();
+  private readonly debugLog = new DebugLogService();
   private readonly ffmpeg = new FfmpegEngine(
     this.dependencies.getFfmpegPath(),
     this.dependencies.getFfprobePath()
@@ -134,8 +136,11 @@ export class ConversionService {
     }
 
     if (extension === ".pdf") {
-      try {
-        if (this.pdfium.isAvailable()) {
+      let pdfiumError: unknown;
+      let pdfiumLogPath: string | undefined;
+
+      if (this.pdfium.isAvailable()) {
+        try {
           const rendered = await this.pdfium.renderPage(resolved, pageNumber, 3);
           return {
             ...basePreview,
@@ -148,8 +153,23 @@ export class ConversionService {
               renderer: "pdfium"
             }
           };
+        } catch (error) {
+          pdfiumError = error;
+          pdfiumLogPath = await this.debugLog.write({
+            scope: "pdf-preview",
+            message: "PDFium preview render failed. Falling back to PDF.js.",
+            filePath: resolved,
+            pageNumber,
+            data: {
+              renderer: "pdfium",
+              fileSize: info.size
+            },
+            error
+          });
         }
+      }
 
+      try {
         const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
         const canvasModule = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
         preparePdfCanvasFonts(canvasModule);
@@ -177,16 +197,35 @@ export class ConversionService {
           message: `PDF ${safePageNumber}페이지 미리보기`,
           details: {
             pages: document.numPages,
-            page: safePageNumber
+            page: safePageNumber,
+            renderer: "pdfjs",
+            pdfiumFallback: Boolean(pdfiumError),
+            pdfiumError: pdfiumError instanceof Error ? pdfiumError.message : pdfiumError ? String(pdfiumError) : undefined,
+            logPath: pdfiumLogPath
           }
         };
       } catch (error) {
+        const logPath = await this.debugLog.write({
+          scope: "pdf-preview",
+          message: "PDF preview render failed in all renderers.",
+          filePath: resolved,
+          pageNumber,
+          data: {
+            fileSize: info.size,
+            pdfiumAvailable: this.pdfium.isAvailable(),
+            pdfiumError: pdfiumError instanceof Error ? pdfiumError.message : pdfiumError ? String(pdfiumError) : undefined,
+            pdfiumLogPath
+          },
+          error
+        });
         return {
           ...basePreview,
           previewType: "metadata",
           message: "PDF 미리보기를 만들지 못했습니다.",
           details: {
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
+            pdfiumError: pdfiumError instanceof Error ? pdfiumError.message : pdfiumError ? String(pdfiumError) : undefined,
+            logPath
           }
         };
       }
@@ -337,6 +376,19 @@ export class ConversionService {
       const isCancelled = controller.signal.aborted;
       const cleanedCount = await this.cleanupCreatedOutputs(createdOutputPaths, sourcePaths);
       const userError = this.toUserError(error);
+      const logPath = await this.debugLog.write({
+        scope: "conversion",
+        message: "Conversion job failed.",
+        data: {
+          jobId: job.id,
+          conversionType: payload.conversionType,
+          sourcePaths,
+          outputDir,
+          cleanedCount,
+          cancelled: isCancelled
+        },
+        error
+      });
       emit({
         status: isCancelled ? "cancelled" : "failed",
         progress: isCancelled ? job.progress : Math.max(job.progress, 1),
@@ -345,7 +397,10 @@ export class ConversionService {
           : `파일을 변환하지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.${cleanedCount > 0 ? " 불완전한 출력 파일은 자동 정리했습니다." : ""}`,
         outputPaths: [],
         error: userError,
-        technicalDetails: error instanceof Error ? error.stack || error.message : String(error),
+        technicalDetails: [
+          error instanceof Error ? error.stack || error.message : String(error),
+          logPath ? `Debug log: ${logPath}` : undefined
+        ].filter(Boolean).join("\n\n"),
         resultReport: await this.buildResultReport(sourcePaths, [], job.createdAt, false, [userError]),
         completedAt: Date.now()
       });
