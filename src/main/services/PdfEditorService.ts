@@ -1,6 +1,6 @@
 import path from "node:path";
 import { mkdir, readFile, stat } from "node:fs/promises";
-import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
+import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 import { applyLocalFontMatches, warmPdfPageFonts } from "./LocalFontMatchService.js";
 import { extractPdfReadingOrderFragments } from "./PdfReadingOrderService.js";
 import { applyPdfTextColors } from "./PdfTextColorService.js";
@@ -9,6 +9,7 @@ import { ValidationService } from "./ValidationService.js";
 import { DependencyService } from "./DependencyService.js";
 import { NativePdfTextEditEngine } from "../pdf-native-edit/NativePdfTextEditEngine.js";
 import type {
+  FilePreview,
   PdfEditorEdit,
   PdfEditorPageSize,
   PdfEditorSaveResult,
@@ -74,6 +75,48 @@ export class PdfEditorService {
       pageCount: document.numPages,
       pageSizes,
       items
+    };
+  }
+
+  async getPagePreview(inputPath: string, pageNumber = 1): Promise<FilePreview> {
+    const sourcePath = await this.validatePdfInput(inputPath);
+    const info = await stat(sourcePath);
+    const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
+    const canvasModule = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+    preparePdfCanvasFonts(canvasModule);
+
+    const data = new Uint8Array(await readFile(sourcePath));
+    const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
+    const safePageNumber = Math.max(1, Math.min(document.numPages, Math.trunc(pageNumber) || 1));
+    const page = await document.getPage(safePageNumber);
+    const viewport = page.getViewport({ scale: 3 });
+    const canvas = canvasModule.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    const context = canvas.getContext("2d");
+    context.save();
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.restore();
+    await page.render({
+      canvasContext: context as never,
+      viewport
+    }).promise;
+    const buffer = canvas.toBuffer("image/png");
+
+    return {
+      path: sourcePath,
+      name: path.basename(sourcePath),
+      extension: ".pdf",
+      kind: "pdf",
+      size: info.size,
+      modifiedAt: info.mtimeMs,
+      previewType: "pdf_page",
+      dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
+      message: `PDF ${safePageNumber}페이지 편집 미리보기`,
+      details: {
+        pages: document.numPages,
+        page: safePageNumber,
+        renderer: "pdfjs-editor"
+      }
     };
   }
 

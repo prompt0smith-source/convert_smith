@@ -29,6 +29,28 @@ export function registerPdfEditorHandlers(service: PdfEditorService, pathAccess:
     }
   });
 
+  ipcMain.handle("pdfEditor:getPagePreview", async (_event, filePath: unknown, pageNumber: unknown) => {
+    if (typeof filePath !== "string") {
+      throw new Error("PDF 파일 경로가 올바르지 않습니다.");
+    }
+    const sourcePath = pathAccess.assertAllowed(filePath);
+    try {
+      return await service.getPagePreview(sourcePath, typeof pageNumber === "number" ? pageNumber : 1);
+    } catch (error) {
+      const logPath = await debugLog.write({
+        scope: "pdf-editor",
+        message: "PDF editor page preview failed.",
+        filePath: sourcePath,
+        data: {
+          pageNumber: typeof pageNumber === "number" ? pageNumber : 1
+        },
+        error
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
+    }
+  });
+
   ipcMain.handle("pdfEditor:saveTextEdits", async (_event, payload: StartPdfEditorSavePayload) => {
     if (!payload || typeof payload !== "object") {
       throw new Error("PDF 편집 저장 요청이 올바르지 않습니다.");

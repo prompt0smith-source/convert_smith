@@ -34,6 +34,7 @@ interface DragState {
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.8;
 const DRAG_THRESHOLD = 3;
+const EDIT_PREVIEW_DEBOUNCE_MS = 160;
 
 export function PdfEditorWindowApp(): JSX.Element {
   const token = new URLSearchParams(window.location.search).get("token") || "";
@@ -93,7 +94,7 @@ export function PdfEditorWindowApp(): JSX.Element {
     setIsPageLoading(true);
     setError(undefined);
     window.convertSmith
-      .getFilePreview(previewSourcePath, selectedPage)
+      .getPdfEditorPagePreview(previewSourcePath, selectedPage)
       .then((preview) => {
         if (cancelled) return;
         if (preview.previewType !== "pdf_page" || !preview.dataUrl) {
@@ -132,14 +133,6 @@ export function PdfEditorWindowApp(): JSX.Element {
     [additions, deletedIds, drafts, geometryOverrides, layer]
   );
   const editorEditsKey = useMemo(() => JSON.stringify(editorEdits), [editorEdits]);
-  const selectedTextItem =
-    selectedTarget?.kind === "text"
-      ? layer?.items.find((item) => item.id === selectedTarget.id)
-      : undefined;
-  const selectedAddition =
-    selectedTarget?.kind === "add"
-      ? additions.find((item) => item.id === selectedTarget.id)
-      : undefined;
 
   useEffect(() => {
     if (!context?.sourcePath || !layer || editorEdits.length === 0) {
@@ -174,7 +167,7 @@ export function PdfEditorWindowApp(): JSX.Element {
         .finally(() => {
           if (previewRequestRef.current === requestId) setIsDraftPreviewing(false);
         });
-    }, 520);
+    }, EDIT_PREVIEW_DEBOUNCE_MS);
 
     return () => {
       window.clearTimeout(timer);
@@ -427,20 +420,6 @@ export function PdfEditorWindowApp(): JSX.Element {
         </div>
       )}
 
-      {editMode && (selectedTextItem || selectedAddition) && (
-        <DirectEditPanel
-          selectedTextItem={selectedTextItem}
-          selectedAddition={selectedAddition}
-          textValue={selectedTextItem ? drafts[selectedTextItem.id] ?? selectedTextItem.text : ""}
-          additionValue={selectedAddition?.text || ""}
-          onTextChange={(value) => selectedTextItem && updateTextDraft(selectedTextItem, value)}
-          onAdditionChange={(value) => selectedAddition && updateAddition(selectedAddition.id, { text: value })}
-          onDeleteText={() => selectedTextItem && toggleDelete(selectedTextItem)}
-          onRemoveAddition={() => selectedAddition && removeAddition(selectedAddition.id)}
-          onClose={() => setSelectedTarget(undefined)}
-        />
-      )}
-
       <div className="h-full overflow-auto px-8 pb-12 pt-16">
         <div className="mx-auto w-fit">
           {pagePreview?.dataUrl && pageSize && (
@@ -469,9 +448,11 @@ export function PdfEditorWindowApp(): JSX.Element {
                       zoom={zoom}
                       selected={selectedTarget?.kind === "text" && selectedTarget.id === item.id}
                       deleted={deletedIds.has(item.id)}
+                      value={drafts[item.id] ?? item.text}
                       changed={drafts[item.id] !== undefined || Boolean(geometryOverrides[item.id])}
                       onSelect={() => selectText(item)}
                       onStartDrag={(event) => startDrag(event, { kind: "text", id: item.id }, geometryOverrides[item.id] || item)}
+                      onChange={(value) => updateTextDraft(item, value)}
                       onDelete={() => toggleDelete(item)}
                     />
                   ))}
@@ -484,6 +465,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                       selected={selectedTarget?.kind === "add" && selectedTarget.id === item.id}
                       onSelect={() => selectAddition(item)}
                       onStartDrag={(event) => startDrag(event, { kind: "add", id: item.id }, item)}
+                      onChange={(value) => updateAddition(item.id, { text: value })}
                       onDelete={() => removeAddition(item.id)}
                     />
                   ))}
@@ -618,91 +600,17 @@ function getSaveModeMessage(result: PdfEditorSaveResult): string {
   return "PDF 편집 저장 상태를 확인하지 못했습니다.";
 }
 
-function DirectEditPanel({
-  selectedTextItem,
-  selectedAddition,
-  textValue,
-  additionValue,
-  onTextChange,
-  onAdditionChange,
-  onDeleteText,
-  onRemoveAddition,
-  onClose
-}: {
-  selectedTextItem?: PdfEditorTextItem;
-  selectedAddition?: PendingPdfEditorAddition;
-  textValue: string;
-  additionValue: string;
-  onTextChange: (value: string) => void;
-  onAdditionChange: (value: string) => void;
-  onDeleteText: () => void;
-  onRemoveAddition: () => void;
-  onClose: () => void;
-}): JSX.Element | null {
-  if (!selectedTextItem && !selectedAddition) return null;
-
-  return (
-    <aside className="pdf-editor-direct-panel">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <strong className="text-sm text-stone-900">{selectedTextItem ? "텍스트 직접 수정" : "텍스트 추가"}</strong>
-        <button type="button" className="viewer-icon-button" onClick={onClose} aria-label="닫기">
-          <X size={14} />
-        </button>
-      </div>
-
-      {selectedTextItem ? (
-        <>
-          <label className="pdf-editor-panel-label" htmlFor="pdf-editor-original-text">
-            원문
-          </label>
-          <div id="pdf-editor-original-text" className="pdf-editor-panel-readonly">
-            {selectedTextItem.text || " "}
-          </div>
-          <label className="pdf-editor-panel-label" htmlFor="pdf-editor-direct-text">
-            수정값
-          </label>
-          <textarea
-            id="pdf-editor-direct-text"
-            className="pdf-editor-panel-textarea allow-text-selection"
-            value={textValue}
-            onChange={(event) => onTextChange(event.target.value)}
-          />
-          <button type="button" className="pdf-editor-panel-danger" onClick={onDeleteText}>
-            <Trash2 size={14} />
-            삭제
-          </button>
-        </>
-      ) : (
-        <>
-          <label className="pdf-editor-panel-label" htmlFor="pdf-editor-addition-text">
-            추가 텍스트
-          </label>
-          <textarea
-            id="pdf-editor-addition-text"
-            className="pdf-editor-panel-textarea allow-text-selection"
-            value={additionValue}
-            onChange={(event) => onAdditionChange(event.target.value)}
-            autoFocus
-          />
-          <button type="button" className="pdf-editor-panel-danger" onClick={onRemoveAddition}>
-            <X size={14} />
-            제거
-          </button>
-        </>
-      )}
-    </aside>
-  );
-}
-
 function TextOverlayBox({
   item,
   geometry,
   zoom,
   selected,
   deleted,
+  value,
   changed,
   onSelect,
   onStartDrag,
+  onChange,
   onDelete
 }: {
   item: PdfEditorTextItem;
@@ -710,12 +618,14 @@ function TextOverlayBox({
   zoom: number;
   selected: boolean;
   deleted: boolean;
+  value: string;
   changed: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
+  onChange: (value: string) => void;
   onDelete: () => void;
 }): JSX.Element {
-  const label = deleted ? "삭제 예정" : selected ? "선택됨" : changed ? "수정됨" : "";
+  const label = deleted ? "삭제 예정" : changed && !selected ? "수정됨" : "";
 
   return (
     <div
@@ -730,7 +640,16 @@ function TextOverlayBox({
       style={boxStyle(geometry, zoom)}
       title={item.text}
     >
-      {label && <span className="pdf-editor-field-label">{label}</span>}
+      {selected && !deleted ? (
+        <InlineExistingTextEditor
+          item={item}
+          value={value}
+          zoom={zoom}
+          onChange={onChange}
+        />
+      ) : (
+        label && <span className="pdf-editor-field-label">{label}</span>
+      )}
       {selected && !deleted && (
         <button
           data-no-drag
@@ -755,6 +674,7 @@ function AdditionOverlayBox({
   selected,
   onSelect,
   onStartDrag,
+  onChange,
   onDelete
 }: {
   item: PendingPdfEditorAddition;
@@ -762,6 +682,7 @@ function AdditionOverlayBox({
   selected: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
+  onChange: (value: string) => void;
   onDelete: () => void;
 }): JSX.Element {
   return (
@@ -771,7 +692,15 @@ function AdditionOverlayBox({
       className={["pdf-editor-field pdf-editor-field--addition", selected ? "pdf-editor-field--selected" : ""].join(" ")}
       style={boxStyle(item, zoom)}
     >
-      <span className="pdf-editor-field-label">{selected ? "추가 위치" : "추가됨"}</span>
+      {selected ? (
+        <InlineAdditionTextEditor
+          item={item}
+          zoom={zoom}
+          onChange={onChange}
+        />
+      ) : (
+        <span className="pdf-editor-field-label">{item.text ? "추가됨" : "추가 위치"}</span>
+      )}
       {selected && (
         <button
           data-no-drag
@@ -787,6 +716,102 @@ function AdditionOverlayBox({
         </button>
       )}
     </div>
+  );
+}
+
+function InlineExistingTextEditor({
+  item,
+  value,
+  zoom,
+  onChange
+}: {
+  item: PdfEditorTextItem;
+  value: string;
+  zoom: number;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const input = ref.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [item.id]);
+
+  return (
+    <input
+      ref={ref}
+      data-no-drag
+      className="pdf-editor-inline-input allow-text-selection"
+      value={value}
+      aria-label="PDF 텍스트 직접 수정"
+      spellCheck={false}
+      style={{
+        color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
+        fontFamily: item.fontFamily || "Malgun Gothic, Arial, sans-serif",
+        fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+        lineHeight: "1"
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.preventDefault();
+      }}
+      onPaste={(event) => {
+        event.preventDefault();
+        const text = event.clipboardData.getData("text/plain").replace(/\s*\r?\n\s*/g, " ");
+        const input = event.currentTarget;
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        const nextValue = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+        onChange(nextValue);
+        window.requestAnimationFrame(() => {
+          const cursor = start + text.length;
+          input.setSelectionRange(cursor, cursor);
+        });
+      }}
+    />
+  );
+}
+
+function InlineAdditionTextEditor({
+  item,
+  zoom,
+  onChange
+}: {
+  item: PendingPdfEditorAddition;
+  zoom: number;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const textarea = ref.current;
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, [item.id]);
+
+  return (
+    <textarea
+      ref={ref}
+      data-no-drag
+      className="pdf-editor-inline-input pdf-editor-inline-input--multiline allow-text-selection"
+      value={item.text}
+      aria-label="PDF 텍스트 추가"
+      placeholder="텍스트 입력"
+      spellCheck={false}
+      style={{
+        fontFamily: "Malgun Gothic, Arial, sans-serif",
+        fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+        lineHeight: "1.15"
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => onChange(event.target.value)}
+    />
   );
 }
 
