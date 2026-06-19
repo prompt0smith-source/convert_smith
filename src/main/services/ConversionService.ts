@@ -25,8 +25,9 @@ import { PdfEngine } from "../engines/PdfEngine.js";
 import { OfficeEngine } from "../engines/OfficeEngine.js";
 import { PdfToDocxEngine } from "../engines/PdfToDocxEngine.js";
 import { PdfToXlsxEngine } from "../engines/PdfToXlsxEngine.js";
-import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
+import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 import { decodeBmpToPngBuffer } from "./BmpImageService.js";
+import { PdfiumRenderService } from "./PdfiumRenderService.js";
 
 type JobUpdateCallback = (job: ConversionJob) => void;
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
@@ -49,6 +50,7 @@ export class ConversionService {
   private readonly dependencies = new DependencyService();
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
+  private readonly pdfium = new PdfiumRenderService();
   private readonly ffmpeg = new FfmpegEngine(
     this.dependencies.getFfmpegPath(),
     this.dependencies.getFfprobePath()
@@ -133,8 +135,25 @@ export class ConversionService {
 
     if (extension === ".pdf") {
       try {
+        if (this.pdfium.isAvailable()) {
+          const rendered = await this.pdfium.renderPage(resolved, pageNumber, 3);
+          return {
+            ...basePreview,
+            previewType: "pdf_page",
+            dataUrl: `data:image/png;base64,${rendered.pngBuffer.toString("base64")}`,
+            message: `PDF ${rendered.pageNumber}페이지 미리보기`,
+            details: {
+              pages: rendered.pageCount,
+              page: rendered.pageNumber,
+              renderer: "pdfium"
+            }
+          };
+        }
+
         const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
-        const { createCanvas } = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+        const canvasModule = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+        preparePdfCanvasFonts(canvasModule);
+        const { createCanvas } = canvasModule;
         const data = new Uint8Array(await readFile(resolved));
         const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
         const safePageNumber = Math.max(1, Math.min(document.numPages, Math.trunc(pageNumber) || 1));

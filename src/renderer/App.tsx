@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  Edit3,
   FileCog,
   FileStack,
   FolderOpen,
@@ -41,6 +42,7 @@ import { ConversionTypeSelector } from "./components/ConversionTypeSelector";
 import { OutputSettings } from "./components/OutputSettings";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { UtilityDrawer } from "./components/UtilityDrawer";
+import { PdfEditorPanel } from "./components/PdfEditorPanel";
 import { PdfToolsPanel } from "./components/PdfToolsPanel";
 import { formatBytes, getCommonConversions } from "./lib/formatLabels";
 import { helperMessages, practicalError } from "./lib/koreanMessages";
@@ -274,8 +276,9 @@ export function App(): JSX.Element {
   const selectedFile = files.find((item) => item.id === selectedFileId) || files[0];
   const pdfDisplayFiles = useMemo(() => displayFiles.filter((item) => item.extension === ".pdf"), [displayFiles]);
   const selectedPdfFile = selectedFile?.extension === ".pdf" ? selectedFile : pdfDisplayFiles[0];
-  const activePreviewFile = displayedWorkMode === "pdf_tools" ? selectedPdfFile : selectedFile;
-  const sourceAnchorFile = displayedWorkMode === "pdf_tools" ? selectedPdfFile : selectedFile;
+  const isPdfWorkMode = displayedWorkMode === "pdf_tools" || displayedWorkMode === "pdf_editor";
+  const activePreviewFile = isPdfWorkMode ? selectedPdfFile : selectedFile;
+  const sourceAnchorFile = isPdfWorkMode ? selectedPdfFile : selectedFile;
   const sourceOutputDir = sourceAnchorFile ? getParentDir(sourceAnchorFile.path) : files[0] ? getParentDir(files[0].path) : undefined;
   const commonConversions = useMemo(() => getCommonConversions(files), [files]);
   const selectedConversion =
@@ -344,6 +347,10 @@ export function App(): JSX.Element {
   const getPlannedRunInfo = useCallback((): Pick<LoadingOverlayState, "total" | "expectedJobs"> => {
     const sorted = sortFiles(files, sortMode);
     if (sorted.length === 0) return { total: 0, expectedJobs: 0 };
+
+    if (displayedWorkMode === "pdf_editor") {
+      return { total: 0, expectedJobs: 0 };
+    }
 
     if (displayedWorkMode === "pdf_tools") {
       const pdfFiles = sorted.filter((item) => item.extension === ".pdf");
@@ -1489,6 +1496,10 @@ export function App(): JSX.Element {
 
   const triggerConversion = () => {
     if (isConverting) return;
+    if (displayedWorkMode === "pdf_editor") {
+      setNotice("PDF 편집은 'PDF Viewer 열기' 버튼으로 별도 창에서 진행해주세요.");
+      return;
+    }
     setArrowBurst(false);
     window.requestAnimationFrame(() => setArrowBurst(true));
     window.setTimeout(() => setArrowBurst(false), 620);
@@ -1661,7 +1672,7 @@ export function App(): JSX.Element {
             <p className="mt-1 text-sm text-stone-600">{helperMessages.appSubtitle}</p>
           </div>
           <div className="app-header-actions flex items-center gap-3">
-            <div className="inline-grid grid-cols-2 rounded-md border border-stone-200 bg-stone-100 p-1 text-sm">
+            <div className="inline-grid grid-cols-3 rounded-md border border-stone-200 bg-stone-100 p-1 text-sm">
               <button
                 type="button"
                 onClick={() => changeWorkMode("convert")}
@@ -1683,6 +1694,17 @@ export function App(): JSX.Element {
               >
                 <FileStack size={15} />
                 PDF 도구
+              </button>
+              <button
+                type="button"
+                onClick={() => changeWorkMode("pdf_editor")}
+                className={[
+                  "inline-flex h-9 items-center justify-center gap-2 rounded px-3",
+                  workMode === "pdf_editor" ? "bg-white font-semibold text-emerald-800 shadow-sm" : "text-stone-600"
+                ].join(" ")}
+              >
+                <Edit3 size={15} />
+                PDF 편집기
               </button>
             </div>
             <div className="flex items-center gap-2 rounded-md bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-900">
@@ -1772,6 +1794,7 @@ export function App(): JSX.Element {
         <div
           className={[
             "mode-panel min-h-0 overflow-hidden",
+            displayedWorkMode === "pdf_editor" ? "pdf-editor-mode-panel" : "",
             modeAnimation === "exiting" ? "mode-panel--exiting" : "",
             modeAnimation === "entering" ? "mode-panel--entering" : ""
           ].join(" ")}
@@ -1805,7 +1828,7 @@ export function App(): JSX.Element {
               />
               <PreflightNoticePanel items={conversionPreflightItems} />
             </section>
-          ) : (
+          ) : displayedWorkMode === "pdf_tools" ? (
             <PdfToolsPanel
               displayFiles={displayFiles}
               selectedFile={selectedPdfFile}
@@ -1835,20 +1858,38 @@ export function App(): JSX.Element {
               onCopy={copyPath}
               onNotice={setNotice}
             />
+          ) : (
+            <PdfEditorPanel
+              displayFiles={displayFiles}
+              selectedFile={selectedPdfFile}
+              outputDir={outputDir}
+              sourceOutputDir={sourceOutputDir}
+              useSourceFolder={useSourceFolder}
+              useDatedSubfolder={Boolean(options.useDatedSubfolder)}
+              outputName={outputName}
+              onSelectFile={(item) => setSelectedFileId(item.id)}
+              onPickOutputDir={pickOutputDir}
+              onUseSourceFolderChange={changeUseSourceFolder}
+              onUseDatedSubfolderChange={(value) => setOptions((current) => ({ ...current, useDatedSubfolder: value }))}
+              onOutputNameChange={setOutputName}
+              onNotice={setNotice}
+            />
           )}
         </div>
 
-        <PreviewPanel
-          selectedFile={activePreviewFile}
-          onOpenExternal={openExternalPreview}
-          pdfPageNumber={displayedWorkMode === "pdf_tools" ? pdfPreviewPage : 1}
-          pdfRotation={displayedWorkMode === "pdf_tools" ? pdfPageRotations[pdfPreviewPage] || 0 : 0}
-          onRotatePdfPreview={
-            displayedWorkMode === "pdf_tools" && activePreviewFile?.extension === ".pdf"
-              ? rotateCurrentPdfPreview
-              : undefined
-          }
-        />
+        {displayedWorkMode !== "pdf_editor" && (
+          <PreviewPanel
+            selectedFile={activePreviewFile}
+            onOpenExternal={openExternalPreview}
+            pdfPageNumber={isPdfWorkMode ? pdfPreviewPage : 1}
+            pdfRotation={displayedWorkMode === "pdf_tools" ? pdfPageRotations[pdfPreviewPage] || 0 : 0}
+            onRotatePdfPreview={
+              displayedWorkMode === "pdf_tools" && activePreviewFile?.extension === ".pdf"
+                ? rotateCurrentPdfPreview
+                : undefined
+            }
+          />
+        )}
       </main>
 
       <footer className="app-footer flex h-7 shrink-0 items-center justify-center border-t border-stone-200 bg-white px-4 text-[11px] font-semibold tracking-[0.08em] text-stone-500">

@@ -5,5 +5,6 @@ release
 *.log
 *.tsbuildinfo
 tmp-smoke
+.npm-cache
 .DS_Store
 Thumbs.db

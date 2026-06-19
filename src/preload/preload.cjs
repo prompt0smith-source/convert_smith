@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld("convertSmith", {
   cancelConversion: (jobId) => ipcRenderer.invoke("conversion:cancel", jobId),
   getPdfInfo: (filePath) => ipcRenderer.invoke("pdfTool:getInfo", filePath),
   startPdfTool: (payload) => ipcRenderer.invoke("pdfTool:start", payload),
+  getPdfEditorTextLayer: (filePath) => ipcRenderer.invoke("pdfEditor:getTextLayer", filePath),
+  savePdfEditorTextEdits: (payload) => ipcRenderer.invoke("pdfEditor:saveTextEdits", payload),
+  openPdfEditorWindow: (payload) => ipcRenderer.invoke("pdfEditor:openWindow", payload),
+  getPdfEditorWindowContext: (token) => ipcRenderer.invoke("pdfEditor:getWindowContext", token),
   inspectVideo: (filePath) => ipcRenderer.invoke("video:inspect", filePath),
   getDependencyStatus: (libreOfficePath) =>
     ipcRenderer.invoke("dependencies:status", libreOfficePath),

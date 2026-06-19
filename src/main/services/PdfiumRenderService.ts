@@ -33,6 +33,67 @@ export class PdfiumRenderService {
     return Boolean(process.versions.electron);
   }
 
+  async renderPage(
+    inputPath: string,
+    pageNumber: number,
+    scale: 1 | 2 | 3
+  ): Promise<{ pageNumber: number; pageCount: number; pngBuffer: Buffer }> {
+    if (!this.isAvailable()) {
+      throw new Error("Electron PDFium renderer is not available in this process.");
+    }
+
+    const electron = await importRuntime<ElectronModule>("electron");
+    await electron.app.whenReady();
+
+    const sourceBytes = await readFile(inputPath);
+    const sourcePdf = await PDFDocument.load(sourceBytes);
+    const pageCount = sourcePdf.getPageCount();
+    const safePageNumber = Math.max(1, Math.min(pageCount, Math.trunc(pageNumber) || 1));
+    const pageIndex = safePageNumber - 1;
+    const tempDir = await mkdtemp(path.join(tmpdir(), "convert-smith-pdfium-preview-"));
+    const win = new electron.BrowserWindow({
+      show: false,
+      width: 1200,
+      height: 900,
+      backgroundColor: "#ffffff",
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        offscreen: true
+      }
+    });
+
+    win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+    try {
+      const singlePagePath = await this.writeSinglePagePdf(sourcePdf, pageIndex, tempDir);
+      const sourcePage = sourcePdf.getPage(pageIndex);
+      const pngBuffer = await this.captureSinglePageWithRetry(
+        electron,
+        win,
+        singlePagePath,
+        {
+          width: sourcePage.getWidth(),
+          height: sourcePage.getHeight(),
+          rotation: sourcePage.getRotation().angle,
+          scale
+        }
+      );
+      return { pageNumber: safePageNumber, pageCount, pngBuffer };
+    } finally {
+      if (win.webContents.debugger.isAttached()) {
+        try {
+          win.webContents.debugger.detach();
+        } catch {
+          // Ignore detach failures while the hidden renderer is closing.
+        }
+      }
+      win.destroy();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
   async renderPages(
     inputPath: string,
     scale: 1 | 2 | 3,

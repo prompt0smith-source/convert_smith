@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.80",
+    "@pdf-lib/fontkit": "^1.1.1",
     "docx": "^9.5.1",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",

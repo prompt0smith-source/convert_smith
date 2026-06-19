@@ -45,7 +45,7 @@ export type PdfToDocxMode = "editable_text" | "visual_preservation";
 export type OverwritePolicy = "increment";
 export type SortMode = "basic" | "custom" | "name" | "date" | "type" | "size";
 export type ConvertMode = "batch" | "individual";
-export type WorkMode = "convert" | "pdf_tools";
+export type WorkMode = "convert" | "pdf_tools" | "pdf_editor";
 export type FileKind = "pdf" | "word" | "excel" | "presentation" | "image" | "video" | "audio" | "other";
 
 export type PdfToolType =
@@ -150,6 +150,82 @@ export interface PdfToolJob {
   createdAt: number;
   completedAt?: number;
   options: PdfToolOptions;
+}
+
+export type PdfEditorEditAction = "replace" | "delete" | "add";
+
+export interface PdfEditorTextItem {
+  id: string;
+  pageNumber: number;
+  sourceIndex?: number;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  fontFamily?: string;
+  color?: string;
+}
+
+export interface PdfEditorPageSize {
+  pageNumber: number;
+  width: number;
+  height: number;
+}
+
+export interface PdfEditorTextLayer {
+  path: string;
+  name: string;
+  pageCount: number;
+  pageSizes: PdfEditorPageSize[];
+  items: PdfEditorTextItem[];
+}
+
+export interface PdfEditorEdit {
+  action: PdfEditorEditAction;
+  pageNumber: number;
+  originalText?: string;
+  replacementText?: string;
+  coverX?: number;
+  coverY?: number;
+  coverWidth?: number;
+  coverHeight?: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  fontFamily?: string;
+  color?: string;
+}
+
+export interface StartPdfEditorSavePayload {
+  sourcePath: string;
+  outputDir: string;
+  outputName?: string;
+  useDatedSubfolder?: boolean;
+  edits: PdfEditorEdit[];
+}
+
+export interface PdfEditorSaveResult {
+  outputPath: string;
+  editedCount: number;
+  deletedCount: number;
+  addedCount: number;
+  warnings: string[];
+}
+
+export interface PdfEditorWindowOpenPayload {
+  sourcePath: string;
+  outputDir?: string;
+  outputName?: string;
+  useDatedSubfolder?: boolean;
+}
+
+export interface PdfEditorWindowContext extends PdfEditorWindowOpenPayload {
+  token: string;
+  sourceName: string;
 }
 
 export interface ConversionResultReport {

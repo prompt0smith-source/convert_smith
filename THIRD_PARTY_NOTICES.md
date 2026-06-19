@@ -25,6 +25,7 @@ resources folder:
 | heic-convert | ISC |
 | libheif-js, via heic-convert | LGPL-3.0 |
 | pdf-lib | MIT |
+| @pdf-lib/fontkit | MIT |
 | pdfjs-dist | Apache-2.0 |
 | @napi-rs/canvas | MIT |
 | docx | MIT |

@@ -4,8 +4,13 @@ import type {
   FilePreview,
   FileItem,
   PdfDocumentInfo,
+  PdfEditorSaveResult,
+  PdfEditorTextLayer,
+  PdfEditorWindowContext,
+  PdfEditorWindowOpenPayload,
   PdfToolJob,
   StartConversionPayload,
+  StartPdfEditorSavePayload,
   StartPdfToolPayload,
   VideoInspection
 } from "../main/types/conversion.js";
@@ -24,6 +29,10 @@ export interface ConvertSmithApi {
   cancelConversion(jobId: string): Promise<boolean>;
   getPdfInfo(path: string): Promise<PdfDocumentInfo>;
   startPdfTool(payload: StartPdfToolPayload): Promise<PdfToolJob>;
+  getPdfEditorTextLayer(path: string): Promise<PdfEditorTextLayer>;
+  savePdfEditorTextEdits(payload: StartPdfEditorSavePayload): Promise<PdfEditorSaveResult>;
+  openPdfEditorWindow(payload: PdfEditorWindowOpenPayload): Promise<boolean>;
+  getPdfEditorWindowContext(token: string): Promise<PdfEditorWindowContext>;
   inspectVideo(path: string): Promise<VideoInspection>;
   getDependencyStatus(libreOfficePath?: string): Promise<DependencyStatus>;
   getFilePreview(path: string, pageNumber?: number): Promise<FilePreview>;

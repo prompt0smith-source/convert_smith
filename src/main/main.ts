@@ -1,24 +1,30 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { app, BrowserWindow, Notification, ipcMain, screen } from "electron";
 import type { Rectangle } from "electron";
 import { registerConversionHandlers } from "./ipc/conversionHandlers.js";
 import { registerContextMenuHandlers } from "./ipc/contextMenuHandlers.js";
 import { registerFloatingHandlers } from "./ipc/floatingHandlers.js";
+import { registerPdfEditorHandlers } from "./ipc/pdfEditorHandlers.js";
 import { registerPdfToolHandlers } from "./ipc/pdfToolHandlers.js";
 import { ContextMenuService } from "./services/ContextMenuService.js";
 import { ConversionService } from "./services/ConversionService.js";
 import { FloatingWindowService } from "./services/FloatingWindowService.js";
 import { PathAccessRegistry } from "./services/PathAccessRegistry.js";
+import { PdfEditorService } from "./services/PdfEditorService.js";
 import { PdfToolService } from "./services/PdfToolService.js";
 import type { ContextMenuLaunchAction, ContextMenuLaunchRequest } from "./types/contextMenu.js";
+import type { PdfEditorWindowContext, PdfEditorWindowOpenPayload } from "./types/conversion.js";
 
 const conversionService = new ConversionService();
 const pdfToolService = new PdfToolService();
+const pdfEditorService = new PdfEditorService();
 const contextMenuService = new ContextMenuService();
 const pathAccessRegistry = new PathAccessRegistry();
 let floatingService: FloatingWindowService | undefined;
 let mainWindow: BrowserWindow | undefined;
+const pdfEditorWindowContexts = new Map<string, PdfEditorWindowContext>();
 const initialLaunchRequests = collectLaunchRequests(process.argv);
 const initialQuickLaunchRequests = initialLaunchRequests.filter(isQuickLaunchRequest);
 const pendingLaunchRequests: ContextMenuLaunchRequest[] = initialLaunchRequests.filter(isInteractiveLaunchRequest);
@@ -34,6 +40,8 @@ const EXPANDED_WINDOW_MIN_SIZE = { width: 760, height: 620 };
 const EXPANDED_WINDOW_FALLBACK_SIZE = { width: 1280, height: 820 };
 const COMPACT_WINDOW_SIZE = { width: 430, height: 560 };
 const COMPACT_WINDOW_MIN_SIZE = { width: 360, height: 460 };
+const PDF_EDITOR_WINDOW_MIN_SIZE = { width: 920, height: 680 };
+const PDF_EDITOR_WINDOW_SIZE = { width: 1180, height: 840 };
 const WINDOW_WORK_AREA_MARGIN = 12;
 
 if (process.platform === "win32") {
@@ -97,6 +105,62 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function createPdfEditorWindow(context: PdfEditorWindowContext, parent?: BrowserWindow): BrowserWindow {
+  const iconPath = getAppIconPath();
+  const preloadPath = path.join(__dirname, "../preload/preload.cjs");
+  const sourceBounds = parent && !parent.isDestroyed() ? getWindowReferenceBounds(parent) : undefined;
+  const bounds = sourceBounds
+    ? createBoundsOnSameDisplay(sourceBounds, PDF_EDITOR_WINDOW_SIZE)
+    : undefined;
+  const window = new BrowserWindow({
+    width: bounds?.width || PDF_EDITOR_WINDOW_SIZE.width,
+    height: bounds?.height || PDF_EDITOR_WINDOW_SIZE.height,
+    x: bounds?.x,
+    y: bounds?.y,
+    minWidth: PDF_EDITOR_WINDOW_MIN_SIZE.width,
+    minHeight: PDF_EDITOR_WINDOW_MIN_SIZE.height,
+    title: `Convert Smith PDF Viewer - ${context.sourceName}`,
+    icon: iconPath,
+    backgroundColor: "#f8faf7",
+    webPreferences: {
+      preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+
+  applyAlwaysOnTop(window);
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, url) => {
+    const isDevUrl = url.startsWith("http://127.0.0.1:5173/");
+    const isFileUrl = url.startsWith("file://");
+    if (!isDevUrl && !isFileUrl) {
+      event.preventDefault();
+    }
+  });
+  window.on("closed", () => {
+    pdfEditorWindowContexts.delete(context.token);
+  });
+
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devServerUrl) {
+    const url = new URL(devServerUrl);
+    url.searchParams.set("convertSmithWindow", "pdfEditor");
+    url.searchParams.set("token", context.token);
+    void window.loadURL(url.toString());
+  } else {
+    void window.loadFile(path.join(__dirname, "../../dist/index.html"), {
+      query: {
+        convertSmithWindow: "pdfEditor",
+        token: context.token
+      }
+    });
+  }
+
+  return window;
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
@@ -127,7 +191,36 @@ if (!hasSingleInstanceLock) {
     await loadAppSettings();
     registerConversionHandlers(conversionService, pathAccessRegistry);
     registerPdfToolHandlers(pdfToolService, pathAccessRegistry);
+    registerPdfEditorHandlers(pdfEditorService, pathAccessRegistry);
     registerContextMenuHandlers(contextMenuService);
+    ipcMain.handle("pdfEditor:openWindow", async (event, payload: PdfEditorWindowOpenPayload) => {
+      if (!payload || typeof payload !== "object" || typeof payload.sourcePath !== "string") {
+        throw new Error("PDF Viewer를 열 파일 정보가 올바르지 않습니다.");
+      }
+      const sourcePath = pathAccessRegistry.assertAllowed(payload.sourcePath);
+      const token = randomUUID();
+      const context: PdfEditorWindowContext = {
+        token,
+        sourcePath,
+        sourceName: path.basename(sourcePath),
+        outputDir: typeof payload.outputDir === "string" ? payload.outputDir : undefined,
+        outputName: typeof payload.outputName === "string" ? payload.outputName : undefined,
+        useDatedSubfolder: payload.useDatedSubfolder === true
+      };
+      pdfEditorWindowContexts.set(token, context);
+      createPdfEditorWindow(context, BrowserWindow.fromWebContents(event.sender) || mainWindow);
+      return true;
+    });
+    ipcMain.handle("pdfEditor:getWindowContext", (_event, token: unknown) => {
+      if (typeof token !== "string" || !token.trim()) {
+        throw new Error("PDF Viewer 창 정보를 찾지 못했습니다.");
+      }
+      const context = pdfEditorWindowContexts.get(token);
+      if (!context) {
+        throw new Error("PDF Viewer 창 정보가 만료되었습니다. 다시 열어주세요.");
+      }
+      return context;
+    });
     ipcMain.handle("app:getLaunchFiles", () => drainPendingLaunchRequests());
     ipcMain.handle("app:setCompactMode", (event, enabled: unknown) => {
       const window = BrowserWindow.fromWebContents(event.sender) || mainWindow;

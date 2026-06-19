@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { ConvertSmithApi } from "./exposedApi.js";
-import type { StartConversionPayload, StartPdfToolPayload } from "../main/types/conversion.js";
+import type {
+  PdfEditorWindowOpenPayload,
+  StartConversionPayload,
+  StartPdfEditorSavePayload,
+  StartPdfToolPayload
+} from "../main/types/conversion.js";
 import type { ContextMenuLaunchAction, ContextMenuLaunchRequest } from "../main/types/contextMenu.js";
 
 const api: ConvertSmithApi = {
@@ -22,6 +27,10 @@ const api: ConvertSmithApi = {
   cancelConversion: (jobId: string) => ipcRenderer.invoke("conversion:cancel", jobId),
   getPdfInfo: (path: string) => ipcRenderer.invoke("pdfTool:getInfo", path),
   startPdfTool: (payload: StartPdfToolPayload) => ipcRenderer.invoke("pdfTool:start", payload),
+  getPdfEditorTextLayer: (path: string) => ipcRenderer.invoke("pdfEditor:getTextLayer", path),
+  savePdfEditorTextEdits: (payload: StartPdfEditorSavePayload) => ipcRenderer.invoke("pdfEditor:saveTextEdits", payload),
+  openPdfEditorWindow: (payload: PdfEditorWindowOpenPayload) => ipcRenderer.invoke("pdfEditor:openWindow", payload),
+  getPdfEditorWindowContext: (token: string) => ipcRenderer.invoke("pdfEditor:getWindowContext", token),
   inspectVideo: (path: string) => ipcRenderer.invoke("video:inspect", path),
   getDependencyStatus: (libreOfficePath?: string) =>
     ipcRenderer.invoke("dependencies:status", libreOfficePath),
