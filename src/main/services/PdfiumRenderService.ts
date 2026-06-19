@@ -56,8 +56,9 @@ export class PdfiumRenderService {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
-        sandbox: true,
-        offscreen: true
+        sandbox: false,
+        offscreen: true,
+        backgroundThrottling: false
       }
     });
 
@@ -114,8 +115,9 @@ export class PdfiumRenderService {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
-        sandbox: true,
-        offscreen: true
+        sandbox: false,
+        offscreen: true,
+        backgroundThrottling: false
       }
     });
 
@@ -187,7 +189,7 @@ export class PdfiumRenderService {
       deviceScaleFactor: 1,
       mobile: false
     });
-    await this.delay(900 + page.scale * 150 + (attempt - 1) * 650);
+    await this.delay(1800 + page.scale * 260 + (attempt - 1) * 900);
 
     const result = (await win.webContents.debugger.sendCommand("Page.captureScreenshot", {
       format: "png",

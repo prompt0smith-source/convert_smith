@@ -50,6 +50,7 @@ export function PdfEditorWindowApp(): JSX.Element {
   const [selectedPage, setSelectedPage] = useState(1);
   const [selectedTarget, setSelectedTarget] = useState<DragTarget>();
   const [editMode, setEditMode] = useState(false);
+  const [textRepairEnabled, setTextRepairEnabled] = useState(true);
   const [zoom, setZoom] = useState(1.18);
   const [isLoading, setIsLoading] = useState(true);
   const [isPageLoading, setIsPageLoading] = useState(false);
@@ -124,6 +125,14 @@ export function PdfEditorWindowApp(): JSX.Element {
       geometryOverrides[item.id] ||
       (selectedTarget?.kind === "text" && selectedTarget.id === item.id)
   );
+  const currentPageRepairItems = currentPageItems.filter(
+    (item) =>
+      textNeedsVisualRepair(item.text) &&
+      !deletedIds.has(item.id) &&
+      drafts[item.id] === undefined &&
+      !geometryOverrides[item.id] &&
+      !(selectedTarget?.kind === "text" && selectedTarget.id === item.id)
+  );
   const changedCount = useMemo(
     () => countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides),
     [additions, deletedIds, drafts, geometryOverrides, layer?.items]
@@ -196,12 +205,26 @@ export function PdfEditorWindowApp(): JSX.Element {
   };
 
   const toggleDelete = (item: PdfEditorTextItem) => {
+    const wasDeleted = deletedIds.has(item.id);
     setDeletedIds((current) => {
       const next = new Set(current);
       if (next.has(item.id)) next.delete(item.id);
       else next.add(item.id);
       return next;
     });
+    if (!wasDeleted) {
+      setSelectedTarget(undefined);
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+      setGeometryOverrides((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+    }
   };
 
   const updateAddition = (id: string, patch: Partial<PendingPdfEditorAddition>) => {
@@ -303,6 +326,21 @@ export function PdfEditorWindowApp(): JSX.Element {
         >
           수정
         </button>
+        {editMode && (
+          <button
+            type="button"
+            onClick={() => setTextRepairEnabled((value) => !value)}
+            className={[
+              "inline-flex h-8 items-center rounded-md border px-2 text-xs font-semibold",
+              textRepairEnabled
+                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                : "border-stone-200 bg-white text-stone-600 hover:bg-stone-100"
+            ].join(" ")}
+            title="PDF 렌더러가 한글을 네모로 표시할 때 화면 표시만 보정합니다. 원본 저장 구조에는 바로 적용하지 않습니다."
+          >
+            텍스트 보정
+          </button>
+        )}
         <button type="button" onClick={addTextBox} disabled={!editMode || !pageSize} className="viewer-toolbar-button">
           추가
         </button>
@@ -375,7 +413,16 @@ export function PdfEditorWindowApp(): JSX.Element {
                     />
                   ))}
 
-                  {currentPageItems.map((item) => (
+                  {textRepairEnabled &&
+                    currentPageRepairItems.map((item) => (
+                      <TextRepairOverlayBox
+                        key={`repair-${item.id}`}
+                        item={item}
+                        zoom={zoom}
+                      />
+                    ))}
+
+                  {currentPageItems.filter((item) => !deletedIds.has(item.id)).map((item) => (
                     <TextOverlayBox
                       key={item.id}
                       item={item}
@@ -670,6 +717,28 @@ function CoverOverlayBox({ item, zoom, visible }: { item: PdfEditorTextItem; zoo
   );
 }
 
+function TextRepairOverlayBox({ item, zoom }: { item: PdfEditorTextItem; zoom: number }): JSX.Element {
+  return (
+    <div
+      className="pdf-editor-repair-item"
+      style={boxStyle(item, zoom)}
+      aria-hidden="true"
+    >
+      <span
+        className="pdf-editor-repair-text"
+        style={{
+          color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
+          fontFamily: item.fontFamily || "Malgun Gothic, Arial, sans-serif",
+          fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+          lineHeight: "1.05"
+        }}
+      >
+        {item.text}
+      </span>
+    </div>
+  );
+}
+
 function AdditionOverlayBox({
   item,
   zoom,
@@ -730,6 +799,10 @@ function boxStyle(geometry: PdfEditorBoxGeometry, zoom: number): CSSProperties {
     width: `${Math.max(12, geometry.width * zoom)}px`,
     height: `${Math.max(12, geometry.height * zoom)}px`
   };
+}
+
+function textNeedsVisualRepair(value: string): boolean {
+  return /[\u3131-\u318e\uac00-\ud7a3]/.test(value);
 }
 
 function clampGeometry(geometry: PdfEditorBoxGeometry, pageSize: PdfEditorPageSize): PdfEditorBoxGeometry {
