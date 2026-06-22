@@ -44,7 +44,11 @@ export async function extractPdfPlacedImages(
       currentMatrix = pdfjs.Util.transform(currentMatrix, args);
       continue;
     }
-    if (fn === ops.paintImageXObject && Array.isArray(args) && typeof args[0] === "string") {
+    if (
+      (fn === ops.paintImageXObject || fn === ops.paintJpegXObject) &&
+      Array.isArray(args) &&
+      typeof args[0] === "string"
+    ) {
       placements.push({
         id: args[0],
         matrix: [...currentMatrix],

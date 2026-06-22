@@ -1,0 +1,28 @@
+PDFium / Chromium PDF Renderer Notice
+
+Convert Smith uses Electron. Electron includes Chromium components. PDF preview
+and PDF rendering paths can use Chromium's PDF renderer, including PDFium.
+
+PDFium project:
+https://pdfium.googlesource.com/pdfium/
+
+PDFium license:
+https://pdfium.googlesource.com/pdfium/+/main/LICENSE
+
+PDFium includes copyright notices for The PDFium Authors and is governed by
+BSD-style license terms and Apache License 2.0 portions as indicated by the
+PDFium project license file.
+
+Convert Smith includes Electron and Chromium legal files in:
+
+- legal/licenses/electron/LICENSE
+- legal/licenses/electron/LICENSES.chromium.html
+
+Those files must remain available with distributed Convert Smith installers or
+portable builds when Electron/Chromium components are included.
+
+This notice does not grant permission to use Google, Chromium, Electron, or
+PDFium names or marks to endorse Convert Smith.
+
+This notice is provided for open source license compliance and is not legal
+advice.

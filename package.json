@@ -13,8 +13,8 @@
     "renderer:dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload-cjs.mjs",
     "electron:dev": "concurrently -k \"npm run renderer:dev\" \"wait-on tcp:5173 && tsc -p tsconfig.electron.json --watch\" \"wait-on tcp:5173 file:dist-electron/main/main.js && node scripts/copy-preload-cjs.mjs && node scripts/start-electron-dev.mjs\"",
-    "electron:build": "npm run build && electron-builder",
-    "dist": "npm run electron:build",
+    "electron:build": "node scripts/package-electron.mjs",
+    "dist": "node scripts/package-electron.mjs",
     "smoke": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
@@ -58,6 +58,8 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "README.md",
+      "docs/**/*",
       "THIRD_PARTY_NOTICES.md",
       "legal/**/*",
       "package.json"
@@ -70,6 +72,14 @@
       {
         "from": "THIRD_PARTY_NOTICES.md",
         "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "README.md",
+        "to": "README.md"
+      },
+      {
+        "from": "docs",
+        "to": "docs"
       },
       {
         "from": "legal",

@@ -25,6 +25,7 @@ export function createPdfjsDocumentOptions(data: Uint8Array): Record<string, unk
     data,
     disableWorker: true,
     isEvalSupported: false,
+    verbosity: 0,
     useSystemFonts: true,
     disableFontFace: false,
     standardFontDataUrl: path.join(root, "standard_fonts") + path.sep,
@@ -48,43 +49,33 @@ export function preparePdfCanvasFonts(canvasModule: { GlobalFonts?: CanvasFontRe
 
     captureCanvasLocalFonts(fonts);
 
-    setAliases(fonts, "Times New Roman", ["Times", "Times-Roman", "TimesNewRoman", "Times New Roman PS"]);
+    setAliases(fonts, "Times New Roman", [
+      "Times",
+      "Times-Roman",
+      "TimesNewRoman",
+      "Times New Roman PS",
+      "TimesNewRomanPSMT",
+      "TimesNewRomanPS-BoldMT",
+      "TimesNewRomanPS-ItalicMT",
+      "TimesNewRomanPS-BoldItalicMT",
+      "Times New Roman Bold",
+      "Times New Roman Italic",
+      "Times New Roman Bold Italic"
+    ]);
     setAliases(fonts, "Arial", ["Helvetica", "Helvetica Neue", "ArialMT"]);
     setAliases(fonts, "Courier New", ["Courier", "CourierNew", "CourierStd"]);
     setAliases(fonts, "Malgun Gothic", [
-      "MalgunGothic",
-      "MalgunGothicRegular",
-      "MalgunGothic-Regular",
-      "MalgunGothic-Semilight",
-      "맑은고딕",
       "Gulim",
       "GulimChe",
-      "굴림",
-      "굴림체",
       "Dotum",
       "DotumChe",
-      "돋움",
-      "돋움체",
       "Batang",
       "BatangChe",
-      "바탕",
-      "바탕체",
       "Gungsuh",
       "GungsuhChe",
-      "궁서",
-      "궁서체",
       "AppleGothic",
       "Noto Sans CJK KR",
       "NotoSansCJKkr",
-      "Noto Sans KR",
-      "NotoSansKR",
-      "NotoSansKR-Regular",
-      "NanumGothic",
-      "Nanum Gothic",
-      "HYGoThic",
-      "HYGothic",
-      "HYSMyeongJo",
-      "HYSinMyeongJo",
       "Korean"
     ]);
   } catch {

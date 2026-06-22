@@ -1,4 +1,4 @@
-import type { PdfReadingOrderLine } from "./PdfReadingOrderService.js";
+﻿import type { PdfReadingOrderLine } from "./PdfReadingOrderService.js";
 import { getPreparedCanvasLocalFontFamilies, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
@@ -39,7 +39,10 @@ export async function applyLocalFontMatches(page: any, textItems: PdfReadingOrde
 
   for (const item of textItems) {
     const pdfFontName = getPdfFontName(page, item.pdfFontId) || item.pdfFontName || item.fontFamily;
+    const pdfFontStyle = getPdfFontStyle(page, item.pdfFontId);
     item.pdfFontName = pdfFontName;
+    item.fontWeight = pdfFontStyle.fontWeight || item.fontWeight;
+    item.fontStyle = pdfFontStyle.fontStyle || item.fontStyle;
 
     const cacheKey = `${pdfFontName || ""}|${item.text}`;
     if (!fontCache.has(cacheKey)) {
@@ -110,6 +113,32 @@ function parseFontFamilies(raw: Buffer | Uint8Array | ArrayBuffer | string | und
   }
 }
 
+function getPdfFontStyle(page: any, fontId?: string): { fontWeight?: string; fontStyle?: string } {
+  if (!fontId) return {};
+  try {
+    const font = page.commonObjs?.get?.(fontId);
+    const systemStyle = font?.systemFontInfo?.style;
+    const fontWeight =
+      typeof systemStyle?.weight === "string"
+        ? systemStyle.weight
+        : font?.bold
+          ? "700"
+          : undefined;
+    const fontStyle =
+      typeof systemStyle?.style === "string"
+        ? systemStyle.style
+        : font?.italic
+          ? "italic"
+          : undefined;
+    return {
+      fontWeight,
+      fontStyle
+    };
+  } catch {
+    return {};
+  }
+}
+
 function getPdfFontName(page: any, fontId?: string): string | undefined {
   if (!fontId) return undefined;
   try {
@@ -138,12 +167,20 @@ function createFontCandidates(pdfFontName?: string): string[] {
     .replace(/[,;]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  const postScriptFamily = normalized
+    .replace(/PSMT$/i, "")
+    .replace(/PS[-\s]?(BoldItalic|Bold|Italic|Oblique)MT$/i, " $1")
+    .replace(/PS[-\s]?(BoldItalic|Bold|Italic|Oblique)$/i, " $1")
+    .trim();
+  const postScriptWithoutStyle = postScriptFamily
+    .replace(/[-\s]?(BoldItalic|Bold|Italic|Oblique)$/i, "")
+    .trim();
   const withoutStyle = normalized
-    .replace(/[-\s](Thin|ExtraLight|UltraLight|Light|Regular|Medium|SemiBold|DemiBold|Bold|ExtraBold|UltraBold|Black|Heavy|Italic|Oblique)$/i, "")
+    .replace(/[-\s](Thin|ExtraLight|UltraLight|Light|Regular|Medium|SemiBold|DemiBold|Bold|ExtraBold|UltraBold|Black|Heavy|Italic|Oblique|BoldMT|ItalicMT|BoldItalicMT)$/i, "")
     .trim();
   const dashFamily = normalized.includes("-") ? normalized.split("-")[0].trim() : "";
 
-  return Array.from(new Set([normalized, withoutStyle, dashFamily].filter(Boolean)));
+  return Array.from(new Set([normalized, postScriptFamily, postScriptWithoutStyle, withoutStyle, dashFamily].filter(Boolean)));
 }
 
 function findLocalFont(candidate: string, fonts: string[]): string | undefined {

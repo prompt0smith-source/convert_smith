@@ -1,0 +1,11 @@
+@pdf-lib/fontkit Notice
+
+Package: @pdf-lib/fontkit
+Version used by package-lock.json: see package-lock.json
+Declared license in npm package metadata: MIT
+Project: https://github.com/Hopding/fontkit
+
+The npm package used in this project does not include a separate LICENSE file
+in the installed package directory. Convert Smith records this package metadata
+notice here so the package and declared license are visible in distributed
+legal materials.

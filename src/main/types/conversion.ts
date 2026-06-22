@@ -152,7 +152,7 @@ export interface PdfToolJob {
   options: PdfToolOptions;
 }
 
-export type PdfEditorEditAction = "replace" | "delete" | "add";
+export type PdfEditorEditAction = "replace" | "delete" | "add" | "line" | "image";
 
 export interface PdfEditorTextItem {
   id: string;
@@ -165,6 +165,8 @@ export interface PdfEditorTextItem {
   height: number;
   fontSize: number;
   fontFamily?: string;
+  fontWeight?: string;
+  fontStyle?: string;
   color?: string;
 }
 
@@ -174,17 +176,60 @@ export interface PdfEditorPageSize {
   height: number;
 }
 
+export interface PdfEditorImageItem {
+  id: string;
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  imageDataBase64?: string;
+  mimeType?: "image/png";
+}
+
+export interface PdfEditorGraphicLineItem {
+  id: string;
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  strokeWidth: number;
+  orientation: "horizontal" | "vertical" | "diagonal";
+}
+
+export interface PdfEditorTableItem {
+  id: string;
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rowCount: number;
+  columnCount: number;
+  lineIds: string[];
+}
+
 export interface PdfEditorTextLayer {
   path: string;
   name: string;
   pageCount: number;
   pageSizes: PdfEditorPageSize[];
   items: PdfEditorTextItem[];
+  images: PdfEditorImageItem[];
+  lines: PdfEditorGraphicLineItem[];
+  tables: PdfEditorTableItem[];
+  warnings?: string[];
 }
 
 export interface PdfEditorEdit {
   action: PdfEditorEditAction;
   pageNumber: number;
+  sourceIndex?: number;
   originalText?: string;
   replacementText?: string;
   coverX?: number;
@@ -197,7 +242,16 @@ export interface PdfEditorEdit {
   height: number;
   fontSize: number;
   fontFamily?: string;
+  fontWeight?: string;
+  fontStyle?: string;
   color?: string;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+  strokeWidth?: number;
+  imageDataBase64?: string;
+  mimeType?: "image/png";
 }
 
 export interface StartPdfEditorSavePayload {
@@ -208,15 +262,12 @@ export interface StartPdfEditorSavePayload {
   edits: PdfEditorEdit[];
 }
 
-export type PdfEditorSaveMode = "native_text_edit" | "failed";
-
 export interface PdfEditorSaveResult {
   outputPath: string;
   editedCount: number;
   deletedCount: number;
   addedCount: number;
   warnings: string[];
-  mode: PdfEditorSaveMode;
 }
 
 export interface PdfEditorWindowOpenPayload {

@@ -1,5 +1,7 @@
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
 import type { BrowserWindow } from "electron";
@@ -66,18 +68,24 @@ export class PdfiumRenderService {
 
     try {
       const sourcePage = sourcePdf.getPage(pageIndex);
-      const pngBuffer = await this.captureSinglePageWithRetry(
-        electron,
-        win,
-        inputPath,
-        {
-          pageNumber: safePageNumber,
-          width: sourcePage.getWidth(),
-          height: sourcePage.getHeight(),
-          rotation: sourcePage.getRotation().angle,
-          scale
-        }
-      );
+      const singlePagePath = await this.createSinglePagePdfPath(sourcePdf, pageIndex);
+      let pngBuffer: Buffer;
+      try {
+        pngBuffer = await this.captureSinglePageWithRetry(
+          electron,
+          win,
+          singlePagePath,
+          {
+            pageNumber: 1,
+            width: sourcePage.getWidth(),
+            height: sourcePage.getHeight(),
+            rotation: sourcePage.getRotation().angle,
+            scale
+          }
+        );
+      } finally {
+        await this.cleanupSinglePagePdf(singlePagePath);
+      }
       return { pageNumber: safePageNumber, pageCount, pngBuffer };
     } finally {
       if (win.webContents.debugger.isAttached()) {
@@ -132,18 +140,24 @@ export class PdfiumRenderService {
         );
 
         const sourcePage = sourcePdf.getPage(pageIndex);
-        const pngBuffer = await this.captureSinglePageWithRetry(
-          electron,
-          win,
-          inputPath,
-          {
-            pageNumber,
-            width: sourcePage.getWidth(),
-            height: sourcePage.getHeight(),
-            rotation: sourcePage.getRotation().angle,
-            scale
-          }
-        );
+        const singlePagePath = await this.createSinglePagePdfPath(sourcePdf, pageIndex);
+        let pngBuffer: Buffer;
+        try {
+          pngBuffer = await this.captureSinglePageWithRetry(
+            electron,
+            win,
+            singlePagePath,
+            {
+              pageNumber: 1,
+              width: sourcePage.getWidth(),
+              height: sourcePage.getHeight(),
+              rotation: sourcePage.getRotation().angle,
+              scale
+            }
+          );
+        } finally {
+          await this.cleanupSinglePagePdf(singlePagePath);
+        }
         await onPage(pageNumber, pngBuffer);
       }
     } catch (error) {
@@ -165,6 +179,24 @@ export class PdfiumRenderService {
     }
   }
 
+  private async createSinglePagePdfPath(sourcePdf: PDFDocument, pageIndex: number): Promise<string> {
+    const singlePagePdf = await PDFDocument.create();
+    const [copiedPage] = await singlePagePdf.copyPages(sourcePdf, [pageIndex]);
+    singlePagePdf.addPage(copiedPage);
+    const tempDir = await mkdtemp(path.join(tmpdir(), "convert-smith-pdfium-"));
+    const tempPath = path.join(tempDir, "page.pdf");
+    await writeFile(tempPath, await singlePagePdf.save({ useObjectStreams: false }));
+    return tempPath;
+  }
+
+  private async cleanupSinglePagePdf(tempPath: string): Promise<void> {
+    try {
+      await rm(path.dirname(tempPath), { recursive: true, force: true });
+    } catch {
+      // Temporary cleanup failure should not fail a completed render.
+    }
+  }
+
   private async captureSinglePage(
     electron: ElectronModule,
     win: BrowserWindow,
@@ -179,26 +211,48 @@ export class PdfiumRenderService {
     const zoomPercent = page.scale * 75;
     const url = `${pathToFileURL(pdfPath).toString()}#page=${page.pageNumber}&zoom=${zoomPercent}&toolbar=0&navpanes=0`;
 
-    await win.loadURL(url);
     if (!win.webContents.debugger.isAttached()) {
       win.webContents.debugger.attach();
     }
+    win.setBounds({ width: viewport.width, height: viewport.height });
     await win.webContents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", {
       width: viewport.width,
       height: viewport.height,
       deviceScaleFactor: 1,
       mobile: false
     });
-    await this.delay(1800 + page.scale * 260 + (attempt - 1) * 900);
+    await this.loadPdfViewerUrl(win, url);
+    await this.delay(3200 + page.scale * 520 + (attempt - 1) * 1400);
 
+    await this.captureViewportPng(win);
+    await this.delay(1200 + attempt * 420);
+
+    const fullCapture = await this.captureViewportPng(win);
+    const expectedWidth = Math.ceil(displayWidth * page.scale);
+    const expectedHeight = Math.ceil(displayHeight * page.scale);
+    const bounds = await this.resolvePageBounds(fullCapture, expectedWidth, expectedHeight);
+    return sharp(fullCapture).extract(bounds).png().toBuffer();
+  }
+
+  private async captureViewportPng(win: BrowserWindow): Promise<Buffer> {
     const result = (await win.webContents.debugger.sendCommand("Page.captureScreenshot", {
       format: "png",
       fromSurface: true,
-      captureBeyondViewport: true
+      captureBeyondViewport: false
     })) as { data: string };
-    const fullCapture = Buffer.from(result.data, "base64");
-    const bounds = await this.findPdfPageBounds(fullCapture);
-    return sharp(fullCapture).extract(bounds).png().toBuffer();
+    return Buffer.from(result.data, "base64");
+  }
+
+  private async loadPdfViewerUrl(win: BrowserWindow, url: string): Promise<void> {
+    try {
+      await Promise.race([
+        win.loadURL(url),
+        this.delay(8500).then(() => undefined)
+      ]);
+    } catch {
+      // Some Electron PDF Viewer loads do not report a normal load completion.
+      // Continue to the timed paint/capture phase and let image validation decide.
+    }
   }
 
   private async captureSinglePageWithRetry(
@@ -326,6 +380,104 @@ export class PdfiumRenderService {
       width: Math.min(info.width - cropLeft, right - left + 1 + pad * 2),
       height: Math.min(info.height - cropTop, bottom - top + 1 + pad * 2)
     };
+  }
+
+  private async resolvePageBounds(
+    imageBuffer: Buffer,
+    expectedWidth: number,
+    expectedHeight: number
+  ): Promise<PageBounds> {
+    try {
+      const detected = await this.findPdfPageBounds(imageBuffer);
+      await this.assertReadablePageCrop(imageBuffer, detected, expectedWidth, expectedHeight);
+      return detected;
+    } catch {
+      const topCentered = await this.createTopCenteredPageBounds(imageBuffer, expectedWidth, expectedHeight);
+      try {
+        await this.assertReadablePageCrop(imageBuffer, topCentered, expectedWidth, expectedHeight);
+        return topCentered;
+      } catch {
+        const centered = await this.createCenteredPageBounds(imageBuffer, expectedWidth, expectedHeight);
+        await this.assertReadablePageCrop(imageBuffer, centered, expectedWidth, expectedHeight);
+        return centered;
+      }
+    }
+  }
+
+  private async createTopCenteredPageBounds(
+    imageBuffer: Buffer,
+    expectedWidth: number,
+    expectedHeight: number
+  ): Promise<PageBounds> {
+    const metadata = await sharp(imageBuffer).metadata();
+    const fullWidth = metadata.width || expectedWidth;
+    const fullHeight = metadata.height || expectedHeight;
+    const width = Math.max(1, Math.min(fullWidth, expectedWidth));
+    const height = Math.max(1, Math.min(fullHeight, expectedHeight));
+    const left = Math.max(0, Math.round((fullWidth - width) / 2));
+    const topMargin = Math.max(0, Math.min(fullHeight - height, Math.round(Math.min(96, expectedHeight * 0.035))));
+    return {
+      left,
+      top: topMargin,
+      width: Math.min(width, Math.max(1, fullWidth - left)),
+      height: Math.min(height, Math.max(1, fullHeight - topMargin))
+    };
+  }
+
+  private async createCenteredPageBounds(
+    imageBuffer: Buffer,
+    expectedWidth: number,
+    expectedHeight: number
+  ): Promise<PageBounds> {
+    const metadata = await sharp(imageBuffer).metadata();
+    const width = Math.max(1, Math.min(metadata.width || expectedWidth, expectedWidth));
+    const height = Math.max(1, Math.min(metadata.height || expectedHeight, expectedHeight));
+    const left = Math.max(0, Math.round(((metadata.width || width) - width) / 2));
+    const top = Math.max(0, Math.round(((metadata.height || height) - height) / 2));
+    return {
+      left,
+      top,
+      width: Math.min(width, Math.max(1, (metadata.width || width) - left)),
+      height: Math.min(height, Math.max(1, (metadata.height || height) - top))
+    };
+  }
+
+  private async assertReadablePageCrop(
+    imageBuffer: Buffer,
+    bounds: PageBounds,
+    expectedWidth: number,
+    expectedHeight: number
+  ): Promise<void> {
+    if (bounds.width < expectedWidth * 0.62 || bounds.height < expectedHeight * 0.62) {
+      throw new Error("PDF 페이지 영역이 너무 작게 감지되었습니다.");
+    }
+
+    const expectedAspect = expectedWidth / Math.max(1, expectedHeight);
+    const detectedAspect = bounds.width / Math.max(1, bounds.height);
+    const aspectDelta = Math.abs(detectedAspect - expectedAspect) / Math.max(0.01, expectedAspect);
+    if (aspectDelta > 0.055) {
+      throw new Error("PDF 페이지 캡처 비율이 원본 페이지와 맞지 않습니다.");
+    }
+
+    const { data, info } = await sharp(imageBuffer)
+      .extract(bounds)
+      .removeAlpha()
+      .resize({ width: 80, height: 80, fit: "inside" })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let brightnessTotal = 0;
+    let lightPixels = 0;
+    const pixelCount = Math.max(1, info.width * info.height);
+    for (let offset = 0; offset < data.length; offset += info.channels) {
+      const brightness = (data[offset] + data[offset + 1] + data[offset + 2]) / 3;
+      brightnessTotal += brightness;
+      if (brightness > 210) lightPixels += 1;
+    }
+    const averageBrightness = brightnessTotal / pixelCount;
+    const lightRatio = lightPixels / pixelCount;
+    if (averageBrightness < 120 || lightRatio < 0.08) {
+      throw new Error("PDF 페이지가 아직 정상적으로 렌더링되지 않았습니다.");
+    }
   }
 
   private averageCornerColor(data: Buffer, width: number, height: number, channels: number): Rgb {

@@ -58,16 +58,19 @@ malicious file creation or distribution is not permitted.
 5. Open Source and Third-Party Components
 
 Convert Smith may include or use third-party open source components such as
-FFmpeg, FFprobe, Electron, React, Sharp, pdf-lib, and pdfjs-dist. Those
-components are governed by their own licenses.
+FFmpeg, FFprobe, Electron, Chromium, PDFium, React, Sharp, pdf-lib,
+pdfjs-dist, and other runtime libraries. Those components are governed by
+their own licenses.
 
 Nothing in this notice limits or invalidates rights granted by the licenses
-of FFmpeg, FFprobe, or any other open source component. If this notice
-conflicts with an open source license for a component, the open source license
-controls for that component.
+of FFmpeg, FFprobe, Electron, Chromium, PDFium, or any other open source
+component. If this notice conflicts with an open source license for a
+component, the open source license controls for that component.
 
 Third-party license texts, notices, and source-code offer information are
-included in the installed THIRD_PARTY_NOTICES.md file and the legal folder.
+included in the installed THIRD_PARTY_NOTICES.md file and the legal folder,
+including legal/FFMPEG_SOURCE_OFFER.txt, legal/PDFIUM_CHROMIUM_NOTICE.txt,
+and legal/licenses/.
 
 6. LibreOffice and External Programs
 
@@ -78,8 +81,9 @@ own licenses and policies.
 
 7. Trademarks
 
-FFmpeg, LibreOffice, Electron, React, and other third-party project names and
-trademarks belong to their respective owners. Unless separately stated,
-Convert Smith is not affiliated with or endorsed by those projects.
+FFmpeg, LibreOffice, Electron, Chromium, PDFium, React, and other third-party
+project names and trademarks belong to their respective owners. Unless
+separately stated, Convert Smith is not affiliated with or endorsed by those
+projects.
 
 The full Korean in-app terms are displayed when Convert Smith is first run.

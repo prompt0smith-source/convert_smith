@@ -8,9 +8,14 @@ Use this checklist before uploading a public installer or portable build.
 - Include `legal/EULA.txt`.
 - Use `legal/INSTALLER_EULA.txt` for the NSIS installer license page.
 - Include `legal/FFMPEG_SOURCE_OFFER.txt`.
+- Include `legal/PDFIUM_CHROMIUM_NOTICE.txt`.
 - Include `legal/licenses/ffmpeg-static/*`.
 - Include `legal/licenses/ffprobe-static/*`.
+- Include `legal/licenses/electron/LICENSE`.
+- Include `legal/licenses/electron/LICENSES.chromium.html`.
+- Include the runtime package notices under `legal/licenses/`.
 - Keep FFmpeg and FFprobe license/copyright notices intact.
+- Keep Electron/Chromium/PDFium license/copyright notices intact.
 - Do not add EULA terms that restrict open source component rights.
 
 ## FFmpeg / FFprobe
@@ -29,8 +34,23 @@ Use this checklist before uploading a public installer or portable build.
 - Do not add `heif-enc`, `x265`, or another HEIC/HEVC encoder without a
   separate license, source-notice, and patent review.
 
+## Electron / Chromium / PDFium
+
+- Convert Smith uses Electron, which includes Chromium components.
+- PDF preview/rendering can use Chromium PDF renderer/PDFium.
+- Keep `legal/PDFIUM_CHROMIUM_NOTICE.txt` and
+  `legal/licenses/electron/LICENSES.chromium.html` with public builds.
+- Do not claim Google, Chromium, Electron, or PDFium endorsement.
+
 ## LibreOffice
 
 - LibreOffice is not bundled by default.
 - If you bundle LibreOffice in the future, include LibreOffice license notices
   and source availability information.
+
+## Final release check
+
+- Open the installed app folder and confirm `THIRD_PARTY_NOTICES.md` and
+  `legal/` are present.
+- Confirm FFmpeg/FFprobe binaries still match `legal/FFMPEG_SOURCE_OFFER.txt`.
+- Confirm the installer shows `legal/INSTALLER_EULA.txt`.

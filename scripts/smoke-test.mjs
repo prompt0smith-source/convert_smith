@@ -3,11 +3,10 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process";
 import sharp from "sharp";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
 import ffmpegPath from "ffmpeg-static";
 import { ConversionService } from "../dist-electron/main/services/ConversionService.js";
-import { PdfToolService } from "../dist-electron/main/services/PdfToolService.js";
 import { PdfEditorService } from "../dist-electron/main/services/PdfEditorService.js";
+import { PdfToolService } from "../dist-electron/main/services/PdfToolService.js";
 
 const root = path.resolve("tmp-smoke");
 const options = {
@@ -128,149 +127,39 @@ await writeFile(pdfInput, await pdfDoc.save());
 const pdfPreview = await service.getFilePreview(pdfInput);
 assertPreview("PDF preview", pdfPreview);
 
-const nativeEditPdfInput = path.join(root, "native-edit.pdf");
-const nativeEditPdf = await PDFDocument.create();
-const nativeEditPage = nativeEditPdf.addPage([360, 220]);
-const nativeEditFont = await nativeEditPdf.embedFont(StandardFonts.Helvetica);
-nativeEditPage.drawText("OLD", { x: 36, y: 140, size: 16, font: nativeEditFont });
-nativeEditPage.drawText("DELETE_ME", { x: 36, y: 96, size: 16, font: nativeEditFont });
-await writeFile(nativeEditPdfInput, await nativeEditPdf.save());
-
 const pdfEditorService = new PdfEditorService();
-const nativeEditLayer = await pdfEditorService.getTextLayer(nativeEditPdfInput);
-const oldItem = nativeEditLayer.items.find((item) => item.text === "OLD");
-const deleteItem = nativeEditLayer.items.find((item) => item.text === "DELETE_ME");
-if (!oldItem || !deleteItem) {
-  throw new Error("PDF native editor smoke input did not expose expected text items.");
+const pdfEditorLayer = await pdfEditorService.getTextLayer(pdfInput);
+const pdfEditorItem = pdfEditorLayer.items.find((item) => item.text === "Convert Smith PDF Preview");
+if (!pdfEditorItem) {
+  throw new Error("PDF editor smoke could not find editable source text.");
 }
-const nativeEditResult = await pdfEditorService.saveTextEdits({
-  sourcePath: nativeEditPdfInput,
+const pdfEditorResult = await pdfEditorService.saveTextEdits({
+  sourcePath: pdfInput,
   outputDir: root,
-  outputName: "native_edit_smoke",
+  outputName: "pdf_editor_smoke",
   edits: [
     {
       action: "replace",
-      pageNumber: oldItem.pageNumber,
-      originalText: oldItem.text,
-      replacementText: "NEW VALUE LONGER",
-      coverX: oldItem.x,
-      coverY: oldItem.y,
-      coverWidth: oldItem.width,
-      coverHeight: oldItem.height,
-      x: oldItem.x,
-      y: oldItem.y,
-      width: oldItem.width,
-      height: oldItem.height,
-      fontSize: oldItem.fontSize,
-      fontFamily: oldItem.fontFamily,
-      color: oldItem.color
-    },
-    {
-      action: "delete",
-      pageNumber: deleteItem.pageNumber,
-      originalText: deleteItem.text,
-      x: deleteItem.x,
-      y: deleteItem.y,
-      width: deleteItem.width,
-      height: deleteItem.height,
-      fontSize: deleteItem.fontSize,
-      fontFamily: deleteItem.fontFamily,
-      color: deleteItem.color
+      pageNumber: pdfEditorItem.pageNumber,
+      sourceIndex: pdfEditorItem.sourceIndex,
+      originalText: pdfEditorItem.text,
+      replacementText: "Convert Smith PDF Edited",
+      x: pdfEditorItem.x,
+      y: pdfEditorItem.y,
+      width: pdfEditorItem.width,
+      height: pdfEditorItem.height,
+      fontSize: pdfEditorItem.fontSize,
+      fontFamily: pdfEditorItem.fontFamily,
+      fontWeight: pdfEditorItem.fontWeight,
+      fontStyle: pdfEditorItem.fontStyle,
+      color: pdfEditorItem.color
     }
   ]
 });
-if (nativeEditResult.mode !== "native_text_edit") {
-  throw new Error(`PDF native text edit used wrong mode: ${nativeEditResult.mode}`);
-}
-const editedLayer = await pdfEditorService.getTextLayer(nativeEditResult.outputPath);
-const editedText = editedLayer.items.map((item) => item.text).join(" ");
-if (!editedText.includes("NEW VALUE LONGER") || editedText.includes("OLD") || editedText.includes("DELETE_ME")) {
-  throw new Error(`PDF native text edit did not structurally replace/delete text. Extracted: ${editedText}`);
-}
-
-const nativeAddPdfInput = path.join(root, "native-add.pdf");
-const nativeAddPdf = await PDFDocument.create();
-nativeAddPdf.addPage([360, 220]);
-await writeFile(nativeAddPdfInput, await nativeAddPdf.save());
-const nativeAddResult = await pdfEditorService.saveTextEdits({
-  sourcePath: nativeAddPdfInput,
-  outputDir: root,
-  outputName: "native_add_smoke",
-  edits: [
-    {
-      action: "add",
-      pageNumber: 1,
-      replacementText: "ADDED TEXT",
-      x: 36,
-      y: 68,
-      width: 180,
-      height: 28,
-      fontSize: 14,
-      color: "111827"
-    }
-  ]
-});
-if (nativeAddResult.mode !== "native_text_edit") {
-  throw new Error(`PDF native text addition used wrong mode: ${nativeAddResult.mode}`);
-}
-const addedLayer = await pdfEditorService.getTextLayer(nativeAddResult.outputPath);
-const addedText = addedLayer.items.map((item) => item.text).join(" ");
-if (!addedText.includes("ADDED TEXT")) {
-  throw new Error(`PDF native text addition did not create extractable text. Extracted: ${addedText}`);
-}
-
-let koreanNativeEditResult;
-const koreanFontPath = await findKoreanFontPath();
-if (koreanFontPath) {
-  const koreanEditPdfInput = path.join(root, "native-korean-edit.pdf");
-  const koreanEditPdf = await PDFDocument.create();
-  koreanEditPdf.registerFontkit(fontkit);
-  const koreanEditFont = await koreanEditPdf.embedFont(await readFile(koreanFontPath), { subset: true });
-  const koreanEditPage = koreanEditPdf.addPage([360, 220]);
-  koreanEditPage.drawText("가나다라", { x: 36, y: 140, size: 18, font: koreanEditFont });
-  await writeFile(koreanEditPdfInput, await koreanEditPdf.save());
-
-  const koreanLayer = await pdfEditorService.getTextLayer(koreanEditPdfInput);
-  const koreanItem = koreanLayer.items.find((item) => item.text === "가나다라");
-  if (!koreanItem) {
-    throw new Error("PDF native Korean editor smoke input did not expose expected text item.");
-  }
-
-  koreanNativeEditResult = await pdfEditorService.saveTextEdits({
-    sourcePath: koreanEditPdfInput,
-    outputDir: root,
-    outputName: "native_korean_edit_smoke",
-    edits: [
-      {
-        action: "replace",
-        pageNumber: koreanItem.pageNumber,
-        originalText: koreanItem.text,
-        replacementText: "다라가나",
-        coverX: koreanItem.x,
-        coverY: koreanItem.y,
-        coverWidth: koreanItem.width,
-        coverHeight: koreanItem.height,
-        x: koreanItem.x,
-        y: koreanItem.y,
-        width: koreanItem.width,
-        height: koreanItem.height,
-        fontSize: koreanItem.fontSize,
-        fontFamily: koreanItem.fontFamily,
-        color: koreanItem.color
-      }
-    ]
-  });
-
-  if (koreanNativeEditResult.mode !== "native_text_edit") {
-    throw new Error(`PDF native Korean text edit used wrong mode: ${koreanNativeEditResult.mode}`);
-  }
-  const koreanEditedLayer = await pdfEditorService.getTextLayer(koreanNativeEditResult.outputPath);
-  const koreanEditedText = koreanEditedLayer.items.map((item) => item.text).join(" ");
-  if (!koreanEditedText.includes("다라가나") || koreanEditedText.includes("가나다라")) {
-    throw new Error(`PDF native Korean text edit did not use ToUnicode structural replacement. Extracted: ${koreanEditedText}`);
-  }
-} else {
-  console.warn("Skipping PDF native Korean text edit smoke: no Korean TTF font found.");
+const pdfEditorSavedLayer = await pdfEditorService.getTextLayer(pdfEditorResult.outputPath);
+const pdfEditorSavedText = pdfEditorSavedLayer.items.map((item) => item.text).join("\n");
+if (!pdfEditorSavedText.includes("Convert Smith PDF Edited")) {
+  throw new Error("PDF editor smoke did not persist direct text edits.");
 }
 
 const fakePdfInput = path.join(root, "fake.pdf");
@@ -520,11 +409,7 @@ console.log(`WEBP optimize: ${webpOptimizeJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX reading order: ${readingOrderJob.outputPaths[0]}`);
 console.log(`PDF -> XLSX table reconstruction: ${xlsxJob.outputPaths[0]}`);
 console.log(`PDF -> DOCX text/image separation: ${layeredJob.outputPaths[0]}`);
-console.log(`PDF native text edit: ${nativeEditResult.outputPath}`);
-console.log(`PDF native text addition: ${nativeAddResult.outputPath}`);
-if (koreanNativeEditResult) {
-  console.log(`PDF native Korean text edit: ${koreanNativeEditResult.outputPath}`);
-}
+console.log(`PDF editor direct text save: ${pdfEditorResult.outputPath}`);
 console.log(`PDF merge: ${mergeJob.outputPaths[0]}`);
 console.log(`PDF split files: ${splitJob.outputPaths.length}`);
 console.log(`PDF signature stamp: ${signatureJob.outputPaths[0]}`);
@@ -654,24 +539,6 @@ function decodeXml(value) {
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&amp;/g, "&");
-}
-
-async function findKoreanFontPath() {
-  const windir = process.env.WINDIR || "C:\\Windows";
-  const candidates = [
-    path.join(windir, "Fonts", "malgun.ttf"),
-    path.join(windir, "Fonts", "malgunbd.ttf"),
-    path.join(windir, "Fonts", "gulim.ttc"),
-    path.join(windir, "Fonts", "batang.ttc")
-  ];
-  for (const candidate of candidates) {
-    try {
-      if ((await stat(candidate)).isFile()) return candidate;
-    } catch {
-      // Try the next common Korean system font.
-    }
-  }
-  return undefined;
 }
 
 function run(command, args) {

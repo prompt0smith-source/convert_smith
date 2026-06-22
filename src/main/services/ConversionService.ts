@@ -1,4 +1,4 @@
-import path from "node:path";
+﻿import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdir, stat, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -27,7 +27,6 @@ import { PdfToDocxEngine } from "../engines/PdfToDocxEngine.js";
 import { PdfToXlsxEngine } from "../engines/PdfToXlsxEngine.js";
 import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 import { decodeBmpToPngBuffer } from "./BmpImageService.js";
-import { PdfiumRenderService } from "./PdfiumRenderService.js";
 import { DebugLogService } from "./DebugLogService.js";
 
 type JobUpdateCallback = (job: ConversionJob) => void;
@@ -51,7 +50,6 @@ export class ConversionService {
   private readonly dependencies = new DependencyService();
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
-  private readonly pdfium = new PdfiumRenderService();
   private readonly debugLog = new DebugLogService();
   private readonly ffmpeg = new FfmpegEngine(
     this.dependencies.getFfmpegPath(),
@@ -69,7 +67,7 @@ export class ConversionService {
 
   async resolveDroppedFiles(paths: string[], dropIndexOffset = 0): Promise<FileItem[]> {
     if (!Array.isArray(paths)) {
-      throw new Error("파일 목록이 올바르지 않습니다.");
+      throw new Error("???뵬 筌뤴뫖以????而?몴?? ??녿뮸??덈뼄.");
     }
 
     const items: FileItem[] = [];
@@ -121,13 +119,13 @@ export class ConversionService {
           ...basePreview,
           previewType: "image",
           dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
-          message: "이미지 미리보기"
+          message: "???筌왖 沃섎챶?곮퉪?용┛"
         };
       } catch (error) {
         return {
           ...basePreview,
           previewType: "metadata",
-          message: "이미지 미리보기를 만들지 못했습니다.",
+          message: "???筌왖 沃섎챶?곮퉪?용┛??筌띾슢諭억쭪? 筌륁궢六??щ빍??",
           details: {
             error: error instanceof Error ? error.message : String(error)
           }
@@ -136,38 +134,7 @@ export class ConversionService {
     }
 
     if (extension === ".pdf") {
-      let pdfiumError: unknown;
-      let pdfiumLogPath: string | undefined;
-
-      if (this.pdfium.isAvailable()) {
-        try {
-          const rendered = await this.pdfium.renderPage(resolved, pageNumber, 3);
-          return {
-            ...basePreview,
-            previewType: "pdf_page",
-            dataUrl: `data:image/png;base64,${rendered.pngBuffer.toString("base64")}`,
-            message: `PDF ${rendered.pageNumber}페이지 미리보기`,
-            details: {
-              pages: rendered.pageCount,
-              page: rendered.pageNumber,
-              renderer: "pdfium"
-            }
-          };
-        } catch (error) {
-          pdfiumError = error;
-          pdfiumLogPath = await this.debugLog.write({
-            scope: "pdf-preview",
-            message: "PDFium preview render failed. Falling back to PDF.js.",
-            filePath: resolved,
-            pageNumber,
-            data: {
-              renderer: "pdfium",
-              fileSize: info.size
-            },
-            error
-          });
-        }
-      }
+      let pdfjsError: unknown;
 
       try {
         const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
@@ -199,36 +166,33 @@ export class ConversionService {
             pages: document.numPages,
             page: safePageNumber,
             renderer: "pdfjs",
-            pdfiumFallback: Boolean(pdfiumError),
-            pdfiumError: pdfiumError instanceof Error ? pdfiumError.message : pdfiumError ? String(pdfiumError) : undefined,
-            logPath: pdfiumLogPath
+            pdfiumPreviewDisabled: true
           }
         };
       } catch (error) {
-        const logPath = await this.debugLog.write({
-          scope: "pdf-preview",
-          message: "PDF preview render failed in all renderers.",
-          filePath: resolved,
-          pageNumber,
-          data: {
-            fileSize: info.size,
-            pdfiumAvailable: this.pdfium.isAvailable(),
-            pdfiumError: pdfiumError instanceof Error ? pdfiumError.message : pdfiumError ? String(pdfiumError) : undefined,
-            pdfiumLogPath
-          },
-          error
-        });
-        return {
-          ...basePreview,
-          previewType: "metadata",
-          message: "PDF 미리보기를 만들지 못했습니다.",
-          details: {
-            error: error instanceof Error ? error.message : String(error),
-            pdfiumError: pdfiumError instanceof Error ? pdfiumError.message : pdfiumError ? String(pdfiumError) : undefined,
-            logPath
-          }
-        };
+        pdfjsError = error;
       }
+
+      const logPath = await this.debugLog.write({
+        scope: "pdf-preview",
+        message: "PDF preview render failed in all renderers.",
+        filePath: resolved,
+        pageNumber,
+        data: {
+          fileSize: info.size,
+          pdfiumPreviewDisabled: true
+        },
+        error: pdfjsError
+      });
+      return {
+        ...basePreview,
+        previewType: "metadata",
+        message: "PDF 미리보기를 만들지 못했습니다.",
+        details: {
+          error: pdfjsError instanceof Error ? pdfjsError.message : pdfjsError ? String(pdfjsError) : undefined,
+          logPath
+        }
+      };
     }
 
     if (kind === "video") {
@@ -237,7 +201,7 @@ export class ConversionService {
         return {
           ...basePreview,
           previewType: "media_info",
-          message: "동영상 정보 미리보기",
+          message: "??덉겫???類ｋ궖 沃섎챶?곮퉪?용┛",
           details: {
             container: inspection.container,
             videoCodec: inspection.videoCodec,
@@ -252,7 +216,7 @@ export class ConversionService {
         return {
           ...basePreview,
           previewType: "metadata",
-          message: "동영상 정보를 읽지 못했습니다.",
+          message: "??덉겫???類ｋ궖????? 筌륁궢六??щ빍??",
           details: {
             error: error instanceof Error ? error.message : String(error)
           }
@@ -263,7 +227,7 @@ export class ConversionService {
     return {
       ...basePreview,
       previewType: "metadata",
-      message: "이 파일은 내부 미리보기를 지원하지 않습니다.",
+      message: "?????뵬?? ??? 沃섎챶?곮퉪?용┛??筌왖?癒곕릭筌왖 ??녿뮸??덈뼄.",
       details: {
         fileName: path.basename(resolved),
         extension,
@@ -293,7 +257,7 @@ export class ConversionService {
     const outputDir = await this.validation.validateOutputDir(payload.outputDir);
     this.validation.ensureConversionAllowed(payload.conversionType, sourcePaths);
     if (payload.conversionType === "images_to_pdf" && sourcePaths.length < 1) {
-      throw new Error("PDF로 묶을 이미지 파일이 필요합니다.");
+      throw new Error("PDF嚥??얜씈?????筌왖 ???뵬???袁⑹뒄??몃빍??");
     }
 
     const job: ConversionJob = {
@@ -303,7 +267,7 @@ export class ConversionService {
       conversionType: payload.conversionType,
       status: "queued",
       progress: 0,
-      message: "변환 대기 중입니다.",
+      message: "癰궰????疫?餓λ쵐???덈뼄.",
       outputPaths: [],
       createdAt: Date.now(),
       options
@@ -319,7 +283,7 @@ export class ConversionService {
 
     try {
       const targetOutputDir = options.useDatedSubfolder ? await this.createDatedOutputDir(outputDir) : outputDir;
-      emit({ status: "running", progress: 2, message: "출력 폴더를 준비했습니다." });
+      emit({ status: "running", progress: 2, message: "?곗뮆?????묊몴?餓Β??쑵六??щ빍??" });
 
       const customOutputName = options.outputName?.trim();
       let customOutputCounter = 0;
@@ -355,7 +319,7 @@ export class ConversionService {
       );
 
       const validationMessages: string[] = [];
-      emit({ progress: 98, message: "출력 파일을 검증하는 중입니다.", outputPaths });
+      emit({ progress: 98, message: "?곗뮆?????뵬??野꺜筌앹빜釉??餓λ쵐???덈뼄.", outputPaths });
       for (const outputPath of outputPaths) {
         const validation = await this.validation.validateOutput(payload.conversionType, outputPath);
         validationMessages.push(validation.message);
@@ -367,7 +331,7 @@ export class ConversionService {
       emit({
         status: "success",
         progress: 100,
-        message: "변환과 검증이 완료되었습니다.",
+        message: "癰궰??띾궢 野꺜筌앹빘???袁⑥┷??뤿???щ빍??",
         outputPaths,
         resultReport: await this.buildResultReport(sourcePaths, outputPaths, job.createdAt, true, validationMessages),
         completedAt: Date.now()
@@ -393,8 +357,8 @@ export class ConversionService {
         status: isCancelled ? "cancelled" : "failed",
         progress: isCancelled ? job.progress : Math.max(job.progress, 1),
         message: isCancelled
-          ? "변환이 취소되었습니다."
-          : `파일을 변환하지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.${cleanedCount > 0 ? " 불완전한 출력 파일은 자동 정리했습니다." : ""}`,
+          ? "癰궰??륁뵠 ?띯뫁???뤿???щ빍??"
+          : `???뵬??癰궰??묐릭筌왖 筌륁궢六??щ빍?? ?癒?궚 ???뵬???癒?맒??뤿?椰꾧퀡援?筌왖?癒곕릭筌왖 ??낅뮉 ?類ㅻ뻼??????됰뮸??덈뼄.${cleanedCount > 0 ? " ?븍뜆??袁る립 ?곗뮆?????뵬?? ?癒?짗 ?類ｂ봺??됰뮸??덈뼄." : ""}`,
         outputPaths: [],
         error: userError,
         technicalDetails: [
@@ -540,19 +504,19 @@ export class ConversionService {
     const message = error instanceof Error ? error.message : String(error);
     const lower = message.toLowerCase();
     if (message.includes("LibreOffice") || lower.includes("soffice")) {
-      return "LibreOffice를 찾을 수 없어 변환을 진행할 수 없습니다. 설정에서 올바른 soffice 실행 파일을 지정해주세요.";
+      return "LibreOffice를 찾지 못해 변환을 진행할 수 없습니다. 설정에서 soffice 경로를 지정해주세요.";
     }
     if (lower.includes("eacces") || lower.includes("eperm") || message.includes("권한")) {
-      return "파일을 읽거나 저장할 권한이 없습니다. 파일이 다른 프로그램에서 열려 있거나 보호된 위치인지 확인해주세요.";
+      return "파일을 읽거나 저장할 권한이 없습니다. 파일이 열려 있는지, 저장 폴더 권한이 있는지 확인해주세요.";
     }
-    if (lower.includes("enoent") || message.includes("찾을 수 없")) {
-      return "파일을 찾을 수 없습니다. 원본 파일 또는 저장 폴더가 이동되었는지 확인해주세요.";
+    if (lower.includes("enoent") || message.includes("찾을 수")) {
+      return "파일 경로를 찾지 못했습니다. 원본 파일이 이동되었거나 삭제되었는지 확인해주세요.";
     }
-    if (message.includes("비어") || lower.includes("empty")) {
-      return "비어 있는 파일은 변환할 수 없습니다.";
+    if (message.includes("빈 파일") || lower.includes("empty")) {
+      return "빈 파일은 변환할 수 없습니다.";
     }
     if (lower.includes("password") || lower.includes("encrypted") || message.includes("암호")) {
-      return "암호화되었거나 비밀번호가 걸린 PDF는 변환할 수 없습니다. 잠금을 해제한 뒤 다시 시도해주세요.";
+      return "암호로 보호되었거나 제한된 PDF는 변환할 수 없습니다. 암호 해제 후 다시 시도해주세요.";
     }
     if (
       lower.includes("invalid pdf") ||
@@ -560,21 +524,23 @@ export class ConversionService {
       lower.includes("xref") ||
       lower.includes("pdf header") ||
       lower.includes("parse") ||
-      message.includes("PDF 페이지 영역")
+      message.includes("PDF 파일 검증")
     ) {
-      return "PDF 구조를 읽지 못했습니다. 파일이 손상되었거나 표준 PDF 구조가 아닐 수 있습니다.";
+      return "PDF 구조를 읽지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 PDF일 수 있습니다.";
     }
     if (message.includes("오디오 트랙") || lower.includes("audio track") || lower.includes("no audio")) {
       return "동영상에 오디오 트랙이 없어 MP3를 만들 수 없습니다.";
     }
     if (lower.includes("unsupported codec") || lower.includes("ffprobe") || lower.includes("ffmpeg") || lower.includes("invalid data")) {
-      return "미디어 파일을 읽지 못했습니다. 지원하지 않는 코덱이거나 파일이 손상되었을 수 있습니다.";
+      return "미디어 파일을 읽지 못했습니다. 원본 파일이 손상되었거나 지원하지 않는 코덱일 수 있습니다.";
     }
-    if (message.includes("HEIC")) return "HEIC 파일을 읽지 못했습니다. 다른 HEIC 변환 엔진으로 다시 시도해주세요.";
+    if (message.includes("HEIC")) {
+      return "HEIC 파일을 읽지 못했습니다. 다른 HEIC 파일로 다시 시도해주세요.";
+    }
     if (message.includes("검증") || lower.includes("validation")) {
       return "출력 파일 검증에 실패했습니다. 파일이 정상적으로 열리지 않을 수 있습니다.";
     }
-    if (message.includes("취소")) return "변환이 취소되었습니다.";
+    if (message.includes("취소")) return "변환 작업이 취소되었습니다.";
     return message || "파일을 변환하지 못했습니다.";
   }
 }

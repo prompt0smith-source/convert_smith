@@ -1,11 +1,14 @@
-import { ExternalLink, Minus, Plus, Save, Trash2, X } from "lucide-react";
+﻿import { ExternalLink, Minus, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type {
   FilePreview,
+  PdfEditorGraphicLineItem,
+  PdfEditorImageItem,
   PdfEditorPageSize,
   PdfEditorSaveResult,
+  PdfEditorTableItem,
   PdfEditorTextItem,
   PdfEditorTextLayer,
   PdfEditorWindowContext
@@ -20,7 +23,14 @@ import {
 
 type DragTarget =
   | { kind: "text"; id: string }
-  | { kind: "add"; id: string };
+  | { kind: "add"; id: string }
+  | { kind: "line"; id: string }
+  | { kind: "image"; id: string };
+
+type PdfObjectTarget =
+  | { kind: "image"; id: string }
+  | { kind: "line"; id: string }
+  | { kind: "table"; id: string };
 
 interface DragState {
   pointerId: number;
@@ -28,19 +38,33 @@ interface DragState {
   startClientX: number;
   startClientY: number;
   origin: PdfEditorBoxGeometry;
+  lineOrigin?: PdfEditorGraphicLineItem;
+  lineMode?: LineDragMode;
   moved: boolean;
+  historyCaptured: boolean;
+}
+
+interface EditorHistorySnapshot {
+  drafts: Record<string, string>;
+  deletedIds: string[];
+  additions: PendingPdfEditorAddition[];
+  geometryOverrides: Record<string, PdfEditorBoxGeometry>;
+  lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem>;
+  imageGeometryOverrides: Record<string, PdfEditorImageItem>;
 }
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.8;
 const DRAG_THRESHOLD = 3;
-const EDIT_PREVIEW_DEBOUNCE_MS = 160;
+const HISTORY_LIMIT = 80;
+
+type LineDragMode = "move" | "start" | "end";
 
 export function PdfEditorWindowApp(): JSX.Element {
   const token = new URLSearchParams(window.location.search).get("token") || "";
   const pageFrameRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState>();
-  const previewRequestRef = useRef(0);
+  const previewCacheRef = useRef<Map<string, FilePreview>>(new Map());
 
   const [context, setContext] = useState<PdfEditorWindowContext>();
   const [layer, setLayer] = useState<PdfEditorTextLayer>();
@@ -49,17 +73,20 @@ export function PdfEditorWindowApp(): JSX.Element {
   const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
   const [additions, setAdditions] = useState<PendingPdfEditorAddition[]>([]);
   const [geometryOverrides, setGeometryOverrides] = useState<Record<string, PdfEditorBoxGeometry>>({});
-  const [draftPreviewPath, setDraftPreviewPath] = useState<string>();
+  const [lineGeometryOverrides, setLineGeometryOverrides] = useState<Record<string, PdfEditorGraphicLineItem>>({});
+  const [imageGeometryOverrides, setImageGeometryOverrides] = useState<Record<string, PdfEditorImageItem>>({});
+  const [historyPast, setHistoryPast] = useState<EditorHistorySnapshot[]>([]);
+  const [historyFuture, setHistoryFuture] = useState<EditorHistorySnapshot[]>([]);
   const [selectedPage, setSelectedPage] = useState(1);
   const [selectedTarget, setSelectedTarget] = useState<DragTarget>();
+  const [selectedObject, setSelectedObject] = useState<PdfObjectTarget>();
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<DragTarget>();
   const [editMode, setEditMode] = useState(false);
   const [zoom, setZoom] = useState(1.18);
   const [isLoading, setIsLoading] = useState(true);
   const [isPageLoading, setIsPageLoading] = useState(false);
-  const [isDraftPreviewing, setIsDraftPreviewing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string>();
-  const [draftPreviewError, setDraftPreviewError] = useState<string>();
   const [result, setResult] = useState<PdfEditorSaveResult>();
 
   useEffect(() => {
@@ -86,19 +113,31 @@ export function PdfEditorWindowApp(): JSX.Element {
     };
   }, [token]);
 
-  const previewSourcePath = draftPreviewPath || context?.sourcePath;
-
   useEffect(() => {
-    if (!previewSourcePath) return undefined;
+    if (!context) return undefined;
+    const cacheKey = `${context.sourcePath}::${selectedPage}`;
+    const cachedPreview = previewCacheRef.current.get(cacheKey);
+    if (cachedPreview) {
+      setPagePreview(cachedPreview);
+      setIsPageLoading(false);
+      setError(undefined);
+      return undefined;
+    }
+
     let cancelled = false;
     setIsPageLoading(true);
     setError(undefined);
     window.convertSmith
-      .getPdfEditorPagePreview(previewSourcePath, selectedPage)
+      .getFilePreview(context.sourcePath, selectedPage)
       .then((preview) => {
         if (cancelled) return;
         if (preview.previewType !== "pdf_page" || !preview.dataUrl) {
           throw new Error(buildPreviewErrorMessage(preview));
+        }
+        previewCacheRef.current.set(cacheKey, preview);
+        if (previewCacheRef.current.size > 24) {
+          const oldestKey = previewCacheRef.current.keys().next().value;
+          if (oldestKey) previewCacheRef.current.delete(oldestKey);
         }
         setPagePreview(preview);
       })
@@ -112,7 +151,7 @@ export function PdfEditorWindowApp(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [previewSourcePath, selectedPage]);
+  }, [context?.sourcePath, selectedPage]);
 
   const pageCount = layer?.pageCount || 0;
   const pageSize = useMemo(
@@ -123,67 +162,120 @@ export function PdfEditorWindowApp(): JSX.Element {
     () => (layer?.items || []).filter((item) => item.pageNumber === selectedPage),
     [layer?.items, selectedPage]
   );
+  const currentPageImages = useMemo(
+    () => (layer?.images || []).filter((item) => item.pageNumber === selectedPage),
+    [layer?.images, selectedPage]
+  );
+  const visiblePageImages = useMemo(
+    () => currentPageImages.map((image) => imageGeometryOverrides[image.id] || image),
+    [currentPageImages, imageGeometryOverrides]
+  );
+  const currentPageLines = useMemo(
+    () => (layer?.lines || []).filter((item) => item.pageNumber === selectedPage),
+    [layer?.lines, selectedPage]
+  );
+  const visiblePageLines = useMemo(
+    () => currentPageLines.map((line) => lineGeometryOverrides[line.id] || line),
+    [currentPageLines, lineGeometryOverrides]
+  );
+  const currentPageTables = useMemo(
+    () => (layer?.tables || []).filter((item) => item.pageNumber === selectedPage),
+    [layer?.tables, selectedPage]
+  );
   const currentPageAdditions = additions.filter((item) => item.pageNumber === selectedPage);
+  const coveredItems = currentPageItems.filter(
+    (item) =>
+      deletedIds.has(item.id) ||
+      drafts[item.id] !== undefined ||
+      geometryOverrides[item.id]
+  );
   const changedCount = useMemo(
-    () => countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides),
-    [additions, deletedIds, drafts, geometryOverrides, layer?.items]
+    () => countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides, lineGeometryOverrides, imageGeometryOverrides),
+    [additions, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, layer?.items, lineGeometryOverrides]
   );
-  const editorEdits = useMemo(
-    () => (layer ? buildPdfEditorEdits(layer.items, drafts, deletedIds, additions, geometryOverrides) : []),
-    [additions, deletedIds, drafts, geometryOverrides, layer]
-  );
-  const editorEditsKey = useMemo(() => JSON.stringify(editorEdits), [editorEdits]);
+  const shouldShowEditorOverlay = editMode || changedCount > 0;
 
-  useEffect(() => {
-    if (!context?.sourcePath || !layer || editorEdits.length === 0) {
-      setDraftPreviewPath(undefined);
-      setDraftPreviewError(undefined);
-      setIsDraftPreviewing(false);
-      return undefined;
-    }
+  const createHistorySnapshot = (): EditorHistorySnapshot => ({
+    drafts: { ...drafts },
+    deletedIds: Array.from(deletedIds),
+    additions: additions.map((item) => ({ ...item })),
+    geometryOverrides: cloneGeometryOverrides(geometryOverrides),
+    lineGeometryOverrides: cloneLineGeometryOverrides(lineGeometryOverrides),
+    imageGeometryOverrides: cloneImageGeometryOverrides(imageGeometryOverrides)
+  });
 
-    const requestId = previewRequestRef.current + 1;
-    previewRequestRef.current = requestId;
-    setDraftPreviewError(undefined);
-    const timer = window.setTimeout(() => {
-      setIsDraftPreviewing(true);
-      window.convertSmith
-        .previewPdfEditorTextEdits({
-          sourcePath: context.sourcePath,
-          outputDir: context.outputDir || "",
-          outputName: context.outputName,
-          useDatedSubfolder: false,
-          edits: editorEdits
-        })
-        .then((previewResult) => {
-          if (previewRequestRef.current !== requestId) return;
-          setDraftPreviewPath(previewResult.outputPath);
-        })
-        .catch((previewError: unknown) => {
-          if (previewRequestRef.current !== requestId) return;
-          setDraftPreviewPath(undefined);
-          setDraftPreviewError(previewError instanceof Error ? previewError.message : "PDF 직접 수정 미리보기를 만들지 못했습니다.");
-        })
-        .finally(() => {
-          if (previewRequestRef.current === requestId) setIsDraftPreviewing(false);
-        });
-    }, EDIT_PREVIEW_DEBOUNCE_MS);
+  const restoreHistorySnapshot = (snapshot: EditorHistorySnapshot) => {
+    setDrafts({ ...snapshot.drafts });
+    setDeletedIds(new Set(snapshot.deletedIds));
+    setAdditions(snapshot.additions.map((item) => ({ ...item })));
+    setGeometryOverrides(cloneGeometryOverrides(snapshot.geometryOverrides));
+    setLineGeometryOverrides(cloneLineGeometryOverrides(snapshot.lineGeometryOverrides));
+    setImageGeometryOverrides(cloneImageGeometryOverrides(snapshot.imageGeometryOverrides));
+    setDeleteConfirmTarget(undefined);
+    setResult(undefined);
+  };
 
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [context?.sourcePath, context?.outputDir, context?.outputName, editorEdits, editorEditsKey, layer]);
+  const rememberHistory = () => {
+    const snapshot = createHistorySnapshot();
+    const key = snapshotKey(snapshot);
+    setHistoryPast((current) => {
+      const last = current[current.length - 1];
+      if (last && snapshotKey(last) === key) return current;
+      return [...current, snapshot].slice(-HISTORY_LIMIT);
+    });
+    setHistoryFuture([]);
+    setResult(undefined);
+  };
+
+  const undo = () => {
+    const previous = historyPast[historyPast.length - 1];
+    if (!previous) return;
+    const current = createHistorySnapshot();
+    setHistoryPast((items) => items.slice(0, -1));
+    setHistoryFuture((items) => [current, ...items].slice(0, HISTORY_LIMIT));
+    restoreHistorySnapshot(previous);
+  };
+
+  const redo = () => {
+    const next = historyFuture[0];
+    if (!next) return;
+    const current = createHistorySnapshot();
+    setHistoryFuture((items) => items.slice(1));
+    setHistoryPast((items) => [...items, current].slice(-HISTORY_LIMIT));
+    restoreHistorySnapshot(next);
+  };
 
   useEffect(() => {
     setSelectedTarget(undefined);
+    setSelectedObject(undefined);
+    setDeleteConfirmTarget(undefined);
   }, [selectedPage]);
+
+  useEffect(() => {
+    if (editMode) return;
+    setSelectedTarget(undefined);
+    setSelectedObject(undefined);
+    setDeleteConfirmTarget(undefined);
+  }, [editMode]);
 
   const save = async () => {
     if (!context?.outputDir || !layer) {
       setError("저장할 폴더가 지정되지 않았습니다. 메인 창에서 저장 폴더를 지정한 뒤 Viewer를 다시 열어주세요.");
       return;
     }
-    if (editorEdits.length === 0) {
+    const liveValues = collectLiveEditorValues(layer.items, drafts, additions);
+    const edits = buildPdfEditorEdits(
+      layer.items,
+      liveValues.drafts,
+      deletedIds,
+      liveValues.additions,
+      geometryOverrides,
+      layer.lines,
+      lineGeometryOverrides,
+      layer.images,
+      imageGeometryOverrides
+    );
+    if (edits.length === 0) {
       setError("저장할 수정 내용이 없습니다.");
       return;
     }
@@ -196,9 +288,33 @@ export function PdfEditorWindowApp(): JSX.Element {
         outputDir: context.outputDir,
         outputName: context.outputName,
         useDatedSubfolder: context.useDatedSubfolder,
-        edits: editorEdits
+        edits
       });
+      const nextLayer = await window.convertSmith.getPdfEditorTextLayer(saveResult.outputPath);
+      previewCacheRef.current.clear();
       setResult(saveResult);
+      setDrafts({});
+      setDeletedIds(new Set());
+      setAdditions([]);
+      setGeometryOverrides({});
+      setLineGeometryOverrides({});
+      setImageGeometryOverrides({});
+      setHistoryPast([]);
+      setHistoryFuture([]);
+      setSelectedTarget(undefined);
+      setSelectedObject(undefined);
+      setDeleteConfirmTarget(undefined);
+      setLayer(nextLayer);
+      setSelectedPage((current) => Math.max(1, Math.min(nextLayer.pageCount || 1, current)));
+      setContext((current) =>
+        current
+          ? {
+              ...current,
+              sourcePath: saveResult.outputPath,
+              sourceName: getFileNameFromPath(saveResult.outputPath)
+            }
+          : current
+      );
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "PDF 수정본을 저장하지 못했습니다.");
     } finally {
@@ -206,22 +322,58 @@ export function PdfEditorWindowApp(): JSX.Element {
     }
   };
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        event.stopPropagation();
+        void save();
+        return;
+      }
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        undo();
+        return;
+      }
+      if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        redo();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [additions, changedCount, context, deletedIds, drafts, geometryOverrides, historyFuture, historyPast, imageGeometryOverrides, isSaving, layer, lineGeometryOverrides]);
+
   const changePage = (pageNumber: number) => {
     const nextPage = Math.max(1, Math.min(pageCount || 1, Math.trunc(pageNumber) || 1));
     setSelectedPage(nextPage);
   };
 
+  const commitEditorSelection = () => {
+    setSelectedTarget(undefined);
+    setSelectedObject(undefined);
+    setDeleteConfirmTarget(undefined);
+  };
+
   const selectText = (item: PdfEditorTextItem) => {
     if (!editMode) return;
+    setSelectedObject(undefined);
     setSelectedTarget({ kind: "text", id: item.id });
   };
 
   const selectAddition = (item: PendingPdfEditorAddition) => {
     if (!editMode) return;
+    setSelectedObject(undefined);
     setSelectedTarget({ kind: "add", id: item.id });
   };
 
   const addTextBox = () => {
+    rememberHistory();
     const next = createPdfEditorAddition(selectedPage, additions.length, pageSize);
     setAdditions((current) => [...current, next]);
     setSelectedTarget({ kind: "add", id: next.id });
@@ -229,6 +381,8 @@ export function PdfEditorWindowApp(): JSX.Element {
   };
 
   const updateTextDraft = (item: PdfEditorTextItem, value: string) => {
+    if ((drafts[item.id] ?? item.text) === value && !deletedIds.has(item.id)) return;
+    rememberHistory();
     setDrafts((current) => ({ ...current, [item.id]: value }));
     if (deletedIds.has(item.id)) {
       setDeletedIds((current) => {
@@ -239,36 +393,59 @@ export function PdfEditorWindowApp(): JSX.Element {
     }
   };
 
-  const toggleDelete = (item: PdfEditorTextItem) => {
-    const wasDeleted = deletedIds.has(item.id);
+  const deleteTextItem = (item: PdfEditorTextItem) => {
+    if (deletedIds.has(item.id)) return;
+    rememberHistory();
     setDeletedIds((current) => {
       const next = new Set(current);
-      if (next.has(item.id)) next.delete(item.id);
-      else next.add(item.id);
+      next.add(item.id);
       return next;
     });
-    if (!wasDeleted) {
-      setSelectedTarget(undefined);
-      setDrafts((current) => {
-        const next = { ...current };
-        delete next[item.id];
-        return next;
-      });
-      setGeometryOverrides((current) => {
-        const next = { ...current };
-        delete next[item.id];
-        return next;
-      });
-    }
+    setSelectedTarget(undefined);
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+    setGeometryOverrides((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
   };
 
   const updateAddition = (id: string, patch: Partial<PendingPdfEditorAddition>) => {
+    const target = additions.find((item) => item.id === id);
+    if (target && Object.entries(patch).every(([key, value]) => target[key as keyof PendingPdfEditorAddition] === value)) return;
+    rememberHistory();
     setAdditions((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
   const removeAddition = (id: string) => {
+    if (!additions.some((item) => item.id === id)) return;
+    rememberHistory();
     setAdditions((current) => current.filter((item) => item.id !== id));
     if (selectedTarget?.kind === "add" && selectedTarget.id === id) setSelectedTarget(undefined);
+  };
+
+  const requestDelete = (target: DragTarget) => {
+    setDeleteConfirmTarget(target);
+  };
+
+  const cancelDelete = () => {
+    setDeleteConfirmTarget(undefined);
+  };
+
+  const confirmDelete = () => {
+    const target = deleteConfirmTarget;
+    if (!target) return;
+    if (target.kind === "text") {
+      const item = layer?.items.find((entry) => entry.id === target.id);
+      if (item) deleteTextItem(item);
+    } else if (target.kind === "add") {
+      removeAddition(target.id);
+    }
+    setDeleteConfirmTarget(undefined);
   };
 
   const startDrag = (
@@ -277,13 +454,10 @@ export function PdfEditorWindowApp(): JSX.Element {
     geometry: PdfEditorBoxGeometry
   ) => {
     if (!editMode || event.button !== 0) return;
-    if (target.kind === "text") {
-      setSelectedTarget(target);
-      return;
-    }
     const targetElement = event.target;
     if (targetElement instanceof HTMLElement && targetElement.closest("[data-no-drag]")) return;
     event.preventDefault();
+    event.stopPropagation();
     setSelectedTarget(target);
     dragRef.current = {
       pointerId: event.pointerId,
@@ -291,7 +465,54 @@ export function PdfEditorWindowApp(): JSX.Element {
       startClientX: event.clientX,
       startClientY: event.clientY,
       origin: geometry,
-      moved: false
+      moved: false,
+      historyCaptured: false
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const startLineDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    line: PdfEditorGraphicLineItem
+  ) => {
+    if (!editMode || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTarget(undefined);
+    setDeleteConfirmTarget(undefined);
+    setSelectedObject({ kind: "line", id: line.id });
+    dragRef.current = {
+      pointerId: event.pointerId,
+      target: { kind: "line", id: line.id },
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      origin: line,
+      lineOrigin: line,
+      lineMode: getLineDragMode(line, event, zoom),
+      moved: false,
+      historyCaptured: false
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const startImageDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    image: PdfEditorImageItem
+  ) => {
+    if (!editMode || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTarget(undefined);
+    setDeleteConfirmTarget(undefined);
+    setSelectedObject({ kind: "image", id: image.id });
+    dragRef.current = {
+      pointerId: event.pointerId,
+      target: { kind: "image", id: image.id },
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      origin: image,
+      moved: false,
+      historyCaptured: false
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
@@ -304,7 +525,16 @@ export function PdfEditorWindowApp(): JSX.Element {
       const dy = (event.clientY - drag.startClientY) / zoom;
       if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
       event.preventDefault();
+      if (!drag.historyCaptured) {
+        rememberHistory();
+        drag.historyCaptured = true;
+      }
       drag.moved = true;
+      if (drag.target.kind === "line" && drag.lineOrigin) {
+        const nextLine = adjustLineGeometry(drag.lineOrigin, dx, dy, drag.lineMode || "move", pageSize);
+        applyLineGeometry(drag.target.id, nextLine);
+        return;
+      }
       const nextGeometry = clampGeometry(
         {
           ...drag.origin,
@@ -330,14 +560,32 @@ export function PdfEditorWindowApp(): JSX.Element {
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [pageSize, zoom]);
+  }, [additions, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, lineGeometryOverrides, pageSize, zoom]);
 
   const applyGeometry = (target: DragTarget, geometry: PdfEditorBoxGeometry) => {
     if (target.kind === "text") {
       setGeometryOverrides((current) => ({ ...current, [target.id]: geometry }));
       return;
     }
+    if (target.kind === "image") {
+      setImageGeometryOverrides((current) => {
+        const source = current[target.id] || currentPageImages.find((image) => image.id === target.id);
+        if (!source) return current;
+        return {
+          ...current,
+          [target.id]: {
+            ...source,
+            ...geometry
+          }
+        };
+      });
+      return;
+    }
     setAdditions((current) => current.map((item) => (item.id === target.id ? { ...item, ...geometry } : item)));
+  };
+
+  const applyLineGeometry = (id: string, geometry: PdfEditorGraphicLineItem) => {
+    setLineGeometryOverrides((current) => ({ ...current, [id]: geometry }));
   };
 
   return (
@@ -375,7 +623,7 @@ export function PdfEditorWindowApp(): JSX.Element {
           className="inline-flex h-8 items-center gap-1 rounded-md bg-emerald-700 px-3 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
         >
           <Save size={13} />
-          {isSaving ? "저장 중" : `저장 ${changedCount ? `(${changedCount})` : ""}`}
+          {isSaving ? "저장 중" : `저장${changedCount ? `(${changedCount})` : ""}`}
         </button>
         <button type="button" onClick={() => setZoom((value) => Math.max(MIN_ZOOM, Math.round((value - 0.1) * 100) / 100))} className="viewer-icon-button" aria-label="축소">
           <Minus size={13} />
@@ -385,7 +633,7 @@ export function PdfEditorWindowApp(): JSX.Element {
         </button>
         <button
           type="button"
-          onClick={() => context && window.convertSmith.previewFile(context.sourcePath)}
+          onClick={() => context && window.convertSmith.previewFile(result?.outputPath || context.sourcePath)}
           className="inline-flex h-8 items-center gap-1 rounded-md border border-stone-200 bg-white px-3 text-xs text-stone-700 hover:bg-stone-100"
         >
           <ExternalLink size={13} />
@@ -396,7 +644,7 @@ export function PdfEditorWindowApp(): JSX.Element {
       {(isLoading || isPageLoading) && (
         <PdfViewerLoadingOverlay
           progress={isLoading ? 42 : 76}
-          message={isLoading ? "PDF 구조와 텍스트 레이어를 읽는 중입니다." : "PDF 페이지를 자체 Viewer로 렌더링 중입니다."}
+          message={isLoading ? "PDF 구조와 텍스트 레이어를 읽는 중입니다." : "PDF 페이지를 Viewer로 렌더링 중입니다."}
           completed={isLoading ? 0 : 1}
           total={2}
         />
@@ -408,17 +656,12 @@ export function PdfEditorWindowApp(): JSX.Element {
         </div>
       )}
 
-      {draftPreviewError && (
-        <div className="absolute left-1/2 top-20 z-40 max-w-[720px] -translate-x-1/2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 shadow-xl">
-          {draftPreviewError}
+      {!error && layer?.warnings?.length ? (
+        <div className="absolute left-1/2 top-20 z-40 max-w-[680px] -translate-x-1/2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 shadow-xl">
+          <strong className="mb-1 block">제한 모드로 열었습니다.</strong>
+          {layer.warnings.slice(0, 3).join("\n")}
         </div>
-      )}
-
-      {isDraftPreviewing && (
-        <div className="absolute right-4 top-20 z-40 rounded-md border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-stone-600 shadow-xl">
-          직접 수정 미리보기 반영 중
-        </div>
-      )}
+      ) : null}
 
       <div className="h-full overflow-auto px-8 pb-12 pt-16">
         <div className="mx-auto w-fit">
@@ -426,6 +669,12 @@ export function PdfEditorWindowApp(): JSX.Element {
             <div
               ref={pageFrameRef}
               className="relative bg-white shadow-2xl"
+              onPointerDown={(event) => {
+                if (!editMode) return;
+                if (event.target === event.currentTarget || event.target instanceof HTMLImageElement) {
+                  commitEditorSelection();
+                }
+              }}
               style={{
                 width: `${pageSize.width * zoom}px`,
                 height: `${pageSize.height * zoom}px`
@@ -438,8 +687,72 @@ export function PdfEditorWindowApp(): JSX.Element {
                 className="absolute inset-0 h-full w-full select-none"
               />
 
-              {editMode && (
-                <div className="absolute inset-0">
+              {shouldShowEditorOverlay && (
+                <div
+                  className="absolute inset-0"
+                  onPointerDown={(event) => {
+                    if (event.target === event.currentTarget) commitEditorSelection();
+                  }}
+                >
+                  {editMode && (
+                    <PdfObjectRecognitionLayer
+                      images={visiblePageImages}
+                      lines={visiblePageLines}
+                      tables={currentPageTables}
+                      zoom={zoom}
+                      selected={selectedObject}
+                      onStartLineDrag={startLineDrag}
+                      onStartImageDrag={startImageDrag}
+                      onSelect={(target) => {
+                        setSelectedTarget(undefined);
+                        setDeleteConfirmTarget(undefined);
+                        setSelectedObject(target);
+                      }}
+                    />
+                  )}
+
+                  {currentPageImages.filter((image) => imageGeometryOverrides[image.id]).map((image) => (
+                    <ImageCoverOverlayBox
+                      key={`image-cover-${image.id}`}
+                      image={image}
+                      zoom={zoom}
+                    />
+                  ))}
+
+                  {Object.values(imageGeometryOverrides).filter((image) => image.pageNumber === selectedPage).map((image) => (
+                    <MovedImagePreview
+                      key={`image-preview-${image.id}`}
+                      image={image}
+                      zoom={zoom}
+                    />
+                  ))}
+
+                  {currentPageItems.map((item) => (
+                    <CoverOverlayBox
+                      key={`cover-${item.id}`}
+                      item={item}
+                      zoom={zoom}
+                      visible={coveredItems.includes(item)}
+                    />
+                  ))}
+
+                  {currentPageLines.filter((line) => lineGeometryOverrides[line.id]).map((line) => (
+                    <LineCoverOverlayBox
+                      key={`line-cover-${line.id}`}
+                      line={line}
+                      zoom={zoom}
+                    />
+                  ))}
+
+                  {Object.values(lineGeometryOverrides).filter((line) => line.pageNumber === selectedPage).map((line) => (
+                    <AdjustedLinePreview
+                      key={`line-preview-${line.id}`}
+                      line={line}
+                      zoom={zoom}
+                    />
+                  ))}
+
+
                   {currentPageItems.filter((item) => !deletedIds.has(item.id)).map((item) => (
                     <TextOverlayBox
                       key={item.id}
@@ -450,26 +763,44 @@ export function PdfEditorWindowApp(): JSX.Element {
                       deleted={deletedIds.has(item.id)}
                       value={drafts[item.id] ?? item.text}
                       changed={drafts[item.id] !== undefined || Boolean(geometryOverrides[item.id])}
+                      confirmDeleteOpen={deleteConfirmTarget?.kind === "text" && deleteConfirmTarget.id === item.id}
                       onSelect={() => selectText(item)}
                       onStartDrag={(event) => startDrag(event, { kind: "text", id: item.id }, geometryOverrides[item.id] || item)}
                       onChange={(value) => updateTextDraft(item, value)}
-                      onDelete={() => toggleDelete(item)}
+                      onRequestDelete={() => requestDelete({ kind: "text", id: item.id })}
+                      onConfirmDelete={confirmDelete}
+                      onCancelDelete={cancelDelete}
                     />
                   ))}
 
-                  {currentPageAdditions.map((item) => (
+                  {currentPageAdditions.filter((item) => editMode || item.text.trim()).map((item) => (
                     <AdditionOverlayBox
                       key={item.id}
                       item={item}
                       zoom={zoom}
                       selected={selectedTarget?.kind === "add" && selectedTarget.id === item.id}
+                      previewOnly={!editMode}
+                      confirmDeleteOpen={deleteConfirmTarget?.kind === "add" && deleteConfirmTarget.id === item.id}
                       onSelect={() => selectAddition(item)}
                       onStartDrag={(event) => startDrag(event, { kind: "add", id: item.id }, item)}
                       onChange={(value) => updateAddition(item.id, { text: value })}
-                      onDelete={() => removeAddition(item.id)}
+                      onRequestDelete={() => requestDelete({ kind: "add", id: item.id })}
+                      onConfirmDelete={confirmDelete}
+                      onCancelDelete={cancelDelete}
                     />
                   ))}
                 </div>
+              )}
+
+              {!editMode && (
+                <ViewerTextSelectionLayer
+                  items={currentPageItems}
+                  additions={currentPageAdditions}
+                  drafts={drafts}
+                  deletedIds={deletedIds}
+                  geometryOverrides={geometryOverrides}
+                  zoom={zoom}
+                />
               )}
             </div>
           )}
@@ -479,13 +810,7 @@ export function PdfEditorWindowApp(): JSX.Element {
       {result && (
         <div className="absolute bottom-4 right-4 z-40 max-w-[380px] rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-xl">
           <strong className="mb-1 block">수정본 저장 완료</strong>
-          <p className="mb-1 text-xs font-semibold">{getSaveModeMessage(result)}</p>
           <p className="truncate text-xs">{result.outputPath}</p>
-          {result.warnings.slice(0, 2).map((warning) => (
-            <p key={warning} className="mt-1 line-clamp-2 text-xs leading-5 text-emerald-800">
-              {warning}
-            </p>
-          ))}
         </div>
       )}
     </div>
@@ -577,7 +902,7 @@ function buildPreviewErrorMessage(preview: FilePreview): string {
   const pdfiumReason = getDetailString(details.pdfiumError);
   const logPath = getDetailString(details.logPath);
   return [
-    "PDF 페이지를 자체 Viewer로 렌더링하지 못했습니다.",
+    "PDF 페이지를 Viewer로 렌더링하지 못했습니다.",
     reason ? `상세: ${reason}` : undefined,
     pdfiumReason ? `PDFium: ${pdfiumReason}` : undefined,
     logPath ? `Debug log: ${logPath}` : undefined
@@ -590,14 +915,102 @@ function getDetailString(value: unknown): string | undefined {
   return undefined;
 }
 
-function getSaveModeMessage(result: PdfEditorSaveResult): string {
-  if (result.mode === "native_text_edit") {
-    return "PDF 내부 텍스트를 직접 수정했습니다.";
-  }
-  if (result.mode === "failed") {
-    return "PDF 내부 텍스트 직접 수정에 실패해 저장하지 않았습니다.";
-  }
-  return "PDF 편집 저장 상태를 확인하지 못했습니다.";
+function moveCaretToEnd(element: HTMLElement): void {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function InlineEditableText({
+  value,
+  placeholder,
+  fontSize,
+  fontFamily,
+  fontWeight,
+  fontStyle,
+  color,
+  targetWidth,
+  fitToWidth,
+  visible = true,
+  textId,
+  additionId,
+  onChange
+}: {
+  value: string;
+  placeholder?: string;
+  fontSize: number;
+  fontFamily?: string;
+  fontWeight?: string;
+  fontStyle?: string;
+  color?: string;
+  targetWidth?: number;
+  fitToWidth?: boolean;
+  visible?: boolean;
+  textId?: string;
+  additionId?: string;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.innerText = value;
+    element.focus();
+    moveCaretToEnd(element);
+  }, []);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    if (element.innerText !== value) {
+      element.innerText = value;
+      if (document.activeElement === element) moveCaretToEnd(element);
+    }
+  }, [value]);
+
+  return (
+    <div
+      ref={ref}
+      data-no-drag
+      contentEditable
+      suppressContentEditableWarning
+      role="textbox"
+      aria-label={placeholder || "PDF text"}
+      data-placeholder={placeholder}
+      data-pdf-editor-text-id={textId}
+      data-pdf-editor-addition-id={additionId}
+      className="pdf-editor-inline-editor allow-text-selection"
+      dir="ltr"
+      spellCheck={false}
+      style={{
+        color: visible ? (color ? `#${color.replace(/^#/, "")}` : "#111827") : "transparent",
+        fontFamily: createViewerFontStack(fontFamily, value),
+        fontWeight: normalizeCssFontWeight(fontWeight),
+        fontStyle: normalizeCssFontStyle(fontStyle),
+        fontSize: `${Math.max(8, fontSize)}px`,
+        lineHeight: "1.05",
+        whiteSpace: fitToWidth ? "pre" : "pre-wrap",
+        overflowWrap: fitToWidth ? "normal" : "anywhere",
+        wordBreak: fitToWidth ? "keep-all" : "normal",
+        ...(fitToWidth && targetWidth
+          ? createFitTextStyle(value, fontSize, fontFamily, targetWidth, fontWeight, fontStyle)
+          : {})
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onPaste={(event) => {
+        event.preventDefault();
+        const text = event.clipboardData.getData("text/plain");
+        document.execCommand("insertText", false, text);
+      }}
+      onInput={(event) => onChange(event.currentTarget.innerText.replace(/\n$/, ""))}
+    />
+  );
 }
 
 function TextOverlayBox({
@@ -608,10 +1021,13 @@ function TextOverlayBox({
   deleted,
   value,
   changed,
+  confirmDeleteOpen,
   onSelect,
   onStartDrag,
   onChange,
-  onDelete
+  onRequestDelete,
+  onConfirmDelete,
+  onCancelDelete
 }: {
   item: PdfEditorTextItem;
   geometry: PdfEditorBoxGeometry;
@@ -620,13 +1036,14 @@ function TextOverlayBox({
   deleted: boolean;
   value: string;
   changed: boolean;
+  confirmDeleteOpen: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
   onChange: (value: string) => void;
-  onDelete: () => void;
+  onRequestDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
 }): JSX.Element {
-  const label = deleted ? "삭제 예정" : changed && !selected ? "수정됨" : "";
-
   return (
     <div
       onClick={onSelect}
@@ -641,29 +1058,300 @@ function TextOverlayBox({
       title={item.text}
     >
       {selected && !deleted ? (
-        <InlineExistingTextEditor
-          item={item}
-          value={value}
-          zoom={zoom}
-          onChange={onChange}
-        />
+        <>
+          <InlineEditableText
+            value={value}
+            fontSize={item.fontSize * zoom}
+            fontFamily={item.fontFamily}
+            fontWeight={item.fontWeight}
+            fontStyle={item.fontStyle}
+            color={item.color}
+            targetWidth={geometry.width * zoom}
+            fitToWidth={changed}
+            visible={changed}
+            textId={item.id}
+            onChange={onChange}
+          />
+          <button
+            data-no-drag
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestDelete();
+            }}
+            className="pdf-editor-delete-trigger absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-sm border border-stone-300 bg-white text-stone-600 shadow"
+            aria-label="삭제"
+          >
+            <Trash2 size={12} />
+          </button>
+          {confirmDeleteOpen && (
+            <DeleteConfirmBubble
+              onConfirm={onConfirmDelete}
+              onCancel={onCancelDelete}
+            />
+          )}
+        </>
+      ) : changed && !deleted ? (
+        <div
+          className="pdf-editor-field-text"
+          style={{
+            color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
+            fontFamily: createViewerFontStack(item.fontFamily, value),
+            fontWeight: normalizeCssFontWeight(item.fontWeight),
+            fontStyle: normalizeCssFontStyle(item.fontStyle),
+            fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+            lineHeight: "1.05",
+            whiteSpace: "pre",
+            overflowWrap: "normal",
+            wordBreak: "keep-all",
+            ...createFitTextStyle(value, item.fontSize * zoom, item.fontFamily, geometry.width * zoom, item.fontWeight, item.fontStyle)
+          }}
+        >
+          {value}
+        </div>
       ) : (
-        label && <span className="pdf-editor-field-label">{label}</span>
+        <span className="pdf-editor-field-label">{deleted ? "삭제 예정" : ""}</span>
       )}
-      {selected && !deleted && (
+    </div>
+  );
+}
+
+function CoverOverlayBox({ item, zoom, visible }: { item: PdfEditorTextItem; zoom: number; visible: boolean }): JSX.Element | null {
+  if (!visible) return null;
+  return (
+    <div
+      className="pdf-editor-cover pdf-editor-cover--text"
+      style={boxStyleExact(createTextCoverGeometry(item), zoom)}
+    />
+  );
+}
+
+function collectLiveEditorValues(
+  items: PdfEditorTextItem[],
+  drafts: Record<string, string>,
+  additions: PendingPdfEditorAddition[]
+): { drafts: Record<string, string>; additions: PendingPdfEditorAddition[] } {
+  const nextDrafts = { ...drafts };
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  document.querySelectorAll<HTMLElement>("[data-pdf-editor-text-id]").forEach((element) => {
+    const id = element.dataset.pdfEditorTextId;
+    if (!id) return;
+    const item = itemById.get(id);
+    if (!item) return;
+    const value = normalizeEditableDomText(element.innerText);
+    if (value !== item.text) {
+      nextDrafts[id] = value;
+    } else {
+      delete nextDrafts[id];
+    }
+  });
+
+  const liveAdditionText = new Map<string, string>();
+  document.querySelectorAll<HTMLElement>("[data-pdf-editor-addition-id]").forEach((element) => {
+    const id = element.dataset.pdfEditorAdditionId;
+    if (!id) return;
+    liveAdditionText.set(id, normalizeEditableDomText(element.innerText));
+  });
+
+  const nextAdditions = additions.map((item) =>
+    liveAdditionText.has(item.id) ? { ...item, text: liveAdditionText.get(item.id)! } : item
+  );
+  return { drafts: nextDrafts, additions: nextAdditions };
+}
+
+function normalizeEditableDomText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n$/, "").normalize("NFC");
+}
+
+function LineCoverOverlayBox({ line, zoom }: { line: PdfEditorGraphicLineItem; zoom: number }): JSX.Element {
+  return (
+    <div
+      className="pdf-editor-cover pdf-editor-cover--line"
+      style={boxStyleExact(createLineCoverGeometry(line), zoom)}
+    />
+  );
+}
+
+function ImageCoverOverlayBox({ image, zoom }: { image: PdfEditorImageItem; zoom: number }): JSX.Element {
+  return (
+    <div
+      className="pdf-editor-cover pdf-editor-cover--image"
+      style={boxStyleExact(image, zoom)}
+    />
+  );
+}
+
+function MovedImagePreview({ image, zoom }: { image: PdfEditorImageItem; zoom: number }): JSX.Element | null {
+  if (!image.imageDataBase64) return null;
+  return (
+    <img
+      className="pdf-editor-image-preview"
+      src={`data:${image.mimeType || "image/png"};base64,${image.imageDataBase64}`}
+      alt=""
+      draggable={false}
+      style={boxStyleExact(image, zoom)}
+    />
+  );
+}
+
+function AdjustedLinePreview({ line, zoom }: { line: PdfEditorGraphicLineItem; zoom: number }): JSX.Element {
+  const geometry = createLineHitGeometry(line);
+  return (
+    <svg
+      className="pdf-editor-line-preview"
+      style={boxStyleExact(geometry, zoom)}
+      viewBox={`${geometry.x} ${geometry.y} ${geometry.width} ${geometry.height}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <line
+        x1={line.x1}
+        y1={line.y1}
+        x2={line.x2}
+        y2={line.y2}
+        stroke="black"
+        strokeWidth={Math.max(0.6, line.strokeWidth)}
+        strokeLinecap="square"
+      />
+    </svg>
+  );
+}
+
+function PdfObjectRecognitionLayer({
+  images,
+  lines,
+  tables,
+  zoom,
+  selected,
+  onStartLineDrag,
+  onStartImageDrag,
+  onSelect
+}: {
+  images: PdfEditorImageItem[];
+  lines: PdfEditorGraphicLineItem[];
+  tables: PdfEditorTableItem[];
+  zoom: number;
+  selected?: PdfObjectTarget;
+  onStartLineDrag: (event: ReactPointerEvent<HTMLElement>, line: PdfEditorGraphicLineItem) => void;
+  onStartImageDrag: (event: ReactPointerEvent<HTMLElement>, image: PdfEditorImageItem) => void;
+  onSelect: (target: PdfObjectTarget) => void;
+}): JSX.Element | null {
+  if (images.length === 0 && lines.length === 0 && tables.length === 0) return null;
+
+  return (
+    <div className="pdf-editor-object-layer" aria-label="PDF 객체 인식 레이어">
+      {tables.map((table) => (
         <button
-          data-no-drag
           type="button"
+          key={table.id}
+          className={[
+            "pdf-editor-object-box pdf-editor-object-box--table",
+            selected?.kind === "table" && selected.id === table.id ? "pdf-editor-object-box--selected" : ""
+          ].join(" ")}
+          style={boxStyle(table, zoom)}
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
-            onDelete();
+            onSelect({ kind: "table", id: table.id });
           }}
-          className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-sm border border-stone-300 bg-white text-stone-600 shadow"
-          aria-label="삭제"
+          title={`표 후보 ${table.rowCount}행 ${table.columnCount}열`}
         >
-          <Trash2 size={12} />
+          <span>표</span>
         </button>
-      )}
+      ))}
+
+      {images.map((image) => (
+        <button
+          type="button"
+          key={image.id}
+          className={[
+            "pdf-editor-object-box pdf-editor-object-box--image",
+            selected?.kind === "image" && selected.id === image.id ? "pdf-editor-object-box--selected" : ""
+          ].join(" ")}
+          style={boxStyle(image, zoom)}
+          onPointerDown={(event) => onStartImageDrag(event, image)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect({ kind: "image", id: image.id });
+          }}
+          title="이미지 객체"
+        >
+          <span>이미지</span>
+        </button>
+      ))}
+
+      {lines.map((line) => (
+        <button
+          type="button"
+          key={line.id}
+          className={[
+            "pdf-editor-object-box pdf-editor-object-box--line",
+            `pdf-editor-object-box--${line.orientation}`,
+            selected?.kind === "line" && selected.id === line.id ? "pdf-editor-object-box--selected" : ""
+          ].join(" ")}
+          style={{
+            ...boxStyle(createLineHitGeometry(line), zoom),
+            cursor: "move"
+          }}
+          onPointerDown={(event) => onStartLineDrag(event, line)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect({ kind: "line", id: line.id });
+          }}
+          aria-label="선 조절"
+        >
+          <i
+            className="pdf-editor-line-handle pdf-editor-line-handle--start"
+            style={{
+              ...lineEndpointStyle(line, "start", zoom),
+              cursor: getLineCursor(line)
+            }}
+            aria-hidden="true"
+          />
+          <i
+            className="pdf-editor-line-handle pdf-editor-line-handle--end"
+            style={{
+              ...lineEndpointStyle(line, "end", zoom),
+              cursor: getLineCursor(line)
+            }}
+            aria-hidden="true"
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DeleteConfirmBubble({
+  onConfirm,
+  onCancel
+}: {
+  onConfirm: () => void;
+  onCancel: () => void;
+}): JSX.Element {
+  return (
+    <div
+      data-no-drag
+      className="pdf-editor-delete-bubble"
+      role="dialog"
+      aria-label="텍스트 삭제 확인"
+      onPointerDown={(event) => {
+        event.stopPropagation();
+      }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <p>선택한 텍스트 칸을 삭제할까요?</p>
+      <div className="pdf-editor-delete-bubble-actions">
+        <button type="button" onClick={onConfirm}>
+          예
+        </button>
+        <button type="button" onClick={onCancel}>
+          아니오
+        </button>
+      </div>
     </div>
   );
 }
@@ -672,18 +1360,26 @@ function AdditionOverlayBox({
   item,
   zoom,
   selected,
+  previewOnly,
+  confirmDeleteOpen,
   onSelect,
   onStartDrag,
   onChange,
-  onDelete
+  onRequestDelete,
+  onConfirmDelete,
+  onCancelDelete
 }: {
   item: PendingPdfEditorAddition;
   zoom: number;
   selected: boolean;
+  previewOnly?: boolean;
+  confirmDeleteOpen: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
   onChange: (value: string) => void;
-  onDelete: () => void;
+  onRequestDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
 }): JSX.Element {
   return (
     <div
@@ -693,125 +1389,119 @@ function AdditionOverlayBox({
       style={boxStyle(item, zoom)}
     >
       {selected ? (
-        <InlineAdditionTextEditor
-          item={item}
-          zoom={zoom}
-          onChange={onChange}
-        />
-      ) : (
-        <span className="pdf-editor-field-label">{item.text ? "추가됨" : "추가 위치"}</span>
-      )}
-      {selected && (
-        <button
-          data-no-drag
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
+        <>
+          <InlineEditableText
+            value={item.text}
+            placeholder="텍스트 입력"
+            fontSize={item.fontSize * zoom}
+            fontFamily="Malgun Gothic"
+            fontWeight="400"
+            fontStyle="normal"
+            targetWidth={item.width * zoom}
+            fitToWidth={false}
+            additionId={item.id}
+            onChange={onChange}
+          />
+          <button
+            data-no-drag
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestDelete();
+            }}
+            className="pdf-editor-delete-trigger absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-sm border border-stone-300 bg-white text-stone-600 shadow"
+            aria-label="제거"
+          >
+            <Trash2 size={12} />
+          </button>
+          {confirmDeleteOpen && (
+            <DeleteConfirmBubble
+              onConfirm={onConfirmDelete}
+              onCancel={onCancelDelete}
+            />
+          )}
+        </>
+      ) : previewOnly || item.text ? (
+        <div
+          className="pdf-editor-field-text"
+          style={{
+            color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
+            fontFamily: createViewerFontStack(undefined, item.text),
+            fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+            lineHeight: "1.08",
+            ...createFitTextStyle(item.text, item.fontSize * zoom, undefined, item.width * zoom, "400", "normal")
           }}
-          className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-sm border border-stone-300 bg-white text-stone-600 shadow"
-          aria-label="제거"
         >
-          <X size={12} />
-        </button>
+          {item.text}
+        </div>
+      ) : (
+        <span className="pdf-editor-field-label">추가 텍스트</span>
       )}
     </div>
   );
 }
 
-function InlineExistingTextEditor({
-  item,
-  value,
-  zoom,
-  onChange
+function ViewerTextSelectionLayer({
+  items,
+  additions,
+  drafts,
+  deletedIds,
+  geometryOverrides,
+  zoom
 }: {
-  item: PdfEditorTextItem;
-  value: string;
+  items: PdfEditorTextItem[];
+  additions: PendingPdfEditorAddition[];
+  drafts: Record<string, string>;
+  deletedIds: Set<string>;
+  geometryOverrides: Record<string, PdfEditorBoxGeometry>;
   zoom: number;
-  onChange: (value: string) => void;
 }): JSX.Element {
-  const ref = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    const input = ref.current;
-    if (!input) return;
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  }, [item.id]);
+  const selectableItems = items.filter((item) => !deletedIds.has(item.id));
 
   return (
-    <input
-      ref={ref}
-      data-no-drag
-      className="pdf-editor-inline-input allow-text-selection"
-      value={value}
-      aria-label="PDF 텍스트 직접 수정"
-      spellCheck={false}
-      style={{
-        color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
-        fontFamily: item.fontFamily || "Malgun Gothic, Arial, sans-serif",
-        fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
-        lineHeight: "1"
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => event.stopPropagation()}
-      onChange={(event) => onChange(event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") event.preventDefault();
-      }}
-      onPaste={(event) => {
-        event.preventDefault();
-        const text = event.clipboardData.getData("text/plain").replace(/\s*\r?\n\s*/g, " ");
-        const input = event.currentTarget;
-        const start = input.selectionStart ?? input.value.length;
-        const end = input.selectionEnd ?? input.value.length;
-        const nextValue = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
-        onChange(nextValue);
-        window.requestAnimationFrame(() => {
-          const cursor = start + text.length;
-          input.setSelectionRange(cursor, cursor);
-        });
-      }}
-    />
-  );
-}
+    <div className="pdf-viewer-text-selection-layer" aria-label="PDF 텍스트 선택 레이어">
+      {selectableItems.map((item) => {
+        const geometry = geometryOverrides[item.id] || item;
+        const value = drafts[item.id] ?? item.text;
+        return (
+          <span
+            key={`select-${item.id}`}
+            className="pdf-viewer-selectable-text"
+            style={{
+              ...boxStyle(geometry, zoom),
+              color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
+              fontFamily: createViewerFontStack(item.fontFamily, value),
+              fontWeight: normalizeCssFontWeight(item.fontWeight),
+              fontStyle: normalizeCssFontStyle(item.fontStyle),
+              fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+              lineHeight: "1.05",
+              ...createFitTextStyle(value, item.fontSize * zoom, item.fontFamily, geometry.width * zoom, item.fontWeight, item.fontStyle)
+            }}
+          >
+            {value}
+          </span>
+        );
+      })}
 
-function InlineAdditionTextEditor({
-  item,
-  zoom,
-  onChange
-}: {
-  item: PendingPdfEditorAddition;
-  zoom: number;
-  onChange: (value: string) => void;
-}): JSX.Element {
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-
-  useEffect(() => {
-    const textarea = ref.current;
-    if (!textarea) return;
-    textarea.focus();
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  }, [item.id]);
-
-  return (
-    <textarea
-      ref={ref}
-      data-no-drag
-      className="pdf-editor-inline-input pdf-editor-inline-input--multiline allow-text-selection"
-      value={item.text}
-      aria-label="PDF 텍스트 추가"
-      placeholder="텍스트 입력"
-      spellCheck={false}
-      style={{
-        fontFamily: "Malgun Gothic, Arial, sans-serif",
-        fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
-        lineHeight: "1.15"
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => event.stopPropagation()}
-      onChange={(event) => onChange(event.target.value)}
-    />
+      {additions.filter((item) => item.text.trim()).map((item) => (
+        <span
+          key={`select-${item.id}`}
+          className="pdf-viewer-selectable-text"
+          style={{
+            ...boxStyle(item, zoom),
+            color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
+            fontFamily: createViewerFontStack(undefined, item.text),
+            fontSize: `${Math.max(8, item.fontSize * zoom)}px`,
+            lineHeight: "1.08"
+          }}
+        >
+          {item.text}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -822,6 +1512,285 @@ function boxStyle(geometry: PdfEditorBoxGeometry, zoom: number): CSSProperties {
     width: `${Math.max(12, geometry.width * zoom)}px`,
     height: `${Math.max(12, geometry.height * zoom)}px`
   };
+}
+
+function boxStyleExact(geometry: PdfEditorBoxGeometry, zoom: number): CSSProperties {
+  return {
+    left: `${geometry.x * zoom}px`,
+    top: `${geometry.y * zoom}px`,
+    width: `${Math.max(1, geometry.width * zoom)}px`,
+    height: `${Math.max(1, geometry.height * zoom)}px`
+  };
+}
+
+function createLineHitGeometry(line: PdfEditorGraphicLineItem): PdfEditorBoxGeometry {
+  const pad = Math.max(3, line.strokeWidth * 1.8);
+  return {
+    x: Math.max(0, Math.min(line.x1, line.x2) - pad),
+    y: Math.max(0, Math.min(line.y1, line.y2) - pad),
+    width: Math.abs(line.x2 - line.x1) + pad * 2,
+    height: Math.abs(line.y2 - line.y1) + pad * 2
+  };
+}
+
+function lineEndpointStyle(
+  line: PdfEditorGraphicLineItem,
+  endpoint: "start" | "end",
+  zoom: number
+): CSSProperties {
+  const geometry = createLineHitGeometry(line);
+  const x = endpoint === "start" ? line.x1 : line.x2;
+  const y = endpoint === "start" ? line.y1 : line.y2;
+  const size = 10;
+  return {
+    left: `${(x - geometry.x) * zoom - size / 2}px`,
+    top: `${(y - geometry.y) * zoom - size / 2}px`,
+    width: `${size}px`,
+    height: `${size}px`
+  };
+}
+
+function createLineCoverGeometry(line: PdfEditorGraphicLineItem): PdfEditorBoxGeometry {
+  const pad = Math.max(1.5, line.strokeWidth * 1.8);
+  return {
+    x: Math.max(0, Math.min(line.x1, line.x2) - pad),
+    y: Math.max(0, Math.min(line.y1, line.y2) - pad),
+    width: Math.abs(line.x2 - line.x1) + pad * 2,
+    height: Math.abs(line.y2 - line.y1) + pad * 2
+  };
+}
+
+function getLineCursor(line: PdfEditorGraphicLineItem): CSSProperties["cursor"] {
+  if (line.orientation === "horizontal") return "ew-resize";
+  if (line.orientation === "vertical") return "ns-resize";
+  const dx = line.x2 - line.x1;
+  const dy = line.y2 - line.y1;
+  return dx * dy >= 0 ? "nwse-resize" : "nesw-resize";
+}
+
+function getLineDragMode(
+  line: PdfEditorGraphicLineItem,
+  event: ReactPointerEvent<HTMLElement>,
+  zoom: number
+): LineDragMode {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const px = (event.clientX - rect.left) / zoom + createLineHitGeometry(line).x;
+  const py = (event.clientY - rect.top) / zoom + createLineHitGeometry(line).y;
+  const endpointRadius = Math.max(8 / zoom, line.strokeWidth * 3);
+  const startDistance = Math.hypot(px - line.x1, py - line.y1);
+  const endDistance = Math.hypot(px - line.x2, py - line.y2);
+  if (startDistance <= endpointRadius || startDistance < endDistance * 0.72) return "start";
+  if (endDistance <= endpointRadius || endDistance < startDistance * 0.72) return "end";
+  return "move";
+}
+
+function adjustLineGeometry(
+  origin: PdfEditorGraphicLineItem,
+  dx: number,
+  dy: number,
+  mode: LineDragMode,
+  pageSize: PdfEditorPageSize
+): PdfEditorGraphicLineItem {
+  let x1 = origin.x1;
+  let y1 = origin.y1;
+  let x2 = origin.x2;
+  let y2 = origin.y2;
+
+  if (mode === "move") {
+    x1 += dx;
+    x2 += dx;
+    y1 += dy;
+    y2 += dy;
+  } else if (mode === "start") {
+    x1 += dx;
+    y1 += dy;
+  } else {
+    x2 += dx;
+    y2 += dy;
+  }
+
+  if (origin.orientation === "horizontal") {
+    const y = clampNumber(mode === "move" ? (y1 + y2) / 2 : (origin.y1 + origin.y2) / 2, 0, pageSize.height);
+    y1 = y;
+    y2 = y;
+  } else if (origin.orientation === "vertical") {
+    const x = clampNumber(mode === "move" ? (x1 + x2) / 2 : (origin.x1 + origin.x2) / 2, 0, pageSize.width);
+    x1 = x;
+    x2 = x;
+  }
+
+  const clamped = clampLineToPage({ ...origin, x1, y1, x2, y2 }, pageSize);
+  return normalizeLineGeometry(clamped);
+}
+
+function clampLineToPage(line: PdfEditorGraphicLineItem, pageSize: PdfEditorPageSize): PdfEditorGraphicLineItem {
+  return {
+    ...line,
+    x1: clampNumber(line.x1, 0, pageSize.width),
+    y1: clampNumber(line.y1, 0, pageSize.height),
+    x2: clampNumber(line.x2, 0, pageSize.width),
+    y2: clampNumber(line.y2, 0, pageSize.height)
+  };
+}
+
+function normalizeLineGeometry(line: PdfEditorGraphicLineItem): PdfEditorGraphicLineItem {
+  const x = Math.min(line.x1, line.x2);
+  const y = Math.min(line.y1, line.y2);
+  const rawWidth = Math.abs(line.x2 - line.x1);
+  const rawHeight = Math.abs(line.y2 - line.y1);
+  return {
+    ...line,
+    x,
+    y,
+    width: Math.max(line.strokeWidth, rawWidth),
+    height: Math.max(line.strokeWidth, rawHeight),
+    orientation:
+      rawHeight <= Math.max(1.5, rawWidth * 0.08)
+        ? "horizontal"
+        : rawWidth <= Math.max(1.5, rawHeight * 0.08)
+          ? "vertical"
+          : "diagonal"
+  };
+}
+
+function createTextCoverGeometry(item: PdfEditorTextItem): PdfEditorBoxGeometry {
+  const padX = Math.max(0.8, item.fontSize * 0.08);
+  const padY = Math.max(0.4, item.fontSize * 0.06);
+  const coverHeight = Math.max(item.height, item.fontSize * 1.04, 1);
+  return {
+    x: Math.max(0, item.x - padX),
+    y: Math.max(0, item.y - padY),
+    width: item.width + padX * 2,
+    height: coverHeight + padY * 2
+  };
+}
+
+let textMeasureCanvas: HTMLCanvasElement | undefined;
+
+function createFitTextStyle(
+  text: string,
+  fontSize: number,
+  fontFamily: string | undefined,
+  targetWidth: number,
+  fontWeight?: string,
+  fontStyle?: string
+): CSSProperties {
+  const safeFontSize = Math.max(8, fontSize);
+  const naturalWidth = measureViewerTextWidth(text, safeFontSize, fontFamily, fontWeight, fontStyle);
+  if (!Number.isFinite(naturalWidth) || naturalWidth <= 1 || targetWidth <= 1) {
+    return {};
+  }
+
+  const rawRatio = targetWidth / naturalWidth;
+  if (rawRatio >= 1) {
+    return {
+      letterSpacing: "0px",
+      transform: "none"
+    };
+  }
+
+  return {
+    letterSpacing: "0px",
+    transform: `scaleX(${clampNumber(rawRatio, 0.42, 1.12)})`,
+    transformOrigin: "left top"
+  };
+}
+
+function measureViewerTextWidth(
+  text: string,
+  fontSize: number,
+  fontFamily?: string,
+  fontWeight?: string,
+  fontStyle?: string
+): number {
+  try {
+    textMeasureCanvas ||= document.createElement("canvas");
+    const context = textMeasureCanvas.getContext("2d");
+    if (!context) return estimateViewerTextWidth(text, fontSize);
+    context.font = `${normalizeCssFontStyle(fontStyle)} ${normalizeCssFontWeight(fontWeight)} ${fontSize}px ${createViewerFontStack(fontFamily, text)}`;
+    const measured = context.measureText(text).width;
+    return Number.isFinite(measured) && measured > 0 ? measured : estimateViewerTextWidth(text, fontSize);
+  } catch {
+    return estimateViewerTextWidth(text, fontSize);
+  }
+}
+
+function estimateViewerTextWidth(text: string, fontSize: number): number {
+  return Array.from(text).reduce((sum, char) => {
+    if (char === " ") return sum + fontSize * 0.32;
+    if (/[\u3131-\u318e\uac00-\ud7a3]/.test(char)) return sum + fontSize;
+    if (/[0-9A-Z]/.test(char)) return sum + fontSize * 0.58;
+    if (/[a-z]/.test(char)) return sum + fontSize * 0.5;
+    return sum + fontSize * 0.44;
+  }, 0);
+}
+
+function countTextSpacingSlots(text: string): number {
+  return Math.max(0, Array.from(text.replace(/\s+$/g, "")).length - 1);
+}
+
+function createViewerFontStack(fontFamily: string | undefined, text: string): string {
+  const fallback = /[\u3131-\u318e\uac00-\ud7a3]/.test(text)
+    ? '"Malgun Gothic", "Noto Sans KR", Arial, sans-serif'
+    : 'Arial, "Helvetica Neue", Helvetica, sans-serif';
+  if (!fontFamily?.trim()) return fallback;
+  return `${quoteCssFontFamily(fontFamily)}, ${fallback}`;
+}
+
+function quoteCssFontFamily(fontFamily: string): string {
+  const family = fontFamily.trim().replace(/["\\]/g, "");
+  if (!family) return "Arial";
+  return /^[a-zA-Z0-9_-]+$/.test(family) ? family : `"${family}"`;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeCssFontWeight(weight?: string): CSSProperties["fontWeight"] {
+  if (!weight) return "400";
+  if (/bold|black|heavy/i.test(weight)) return "700";
+  const numeric = Number.parseInt(weight, 10);
+  if (Number.isFinite(numeric)) return Math.max(100, Math.min(900, numeric)) as CSSProperties["fontWeight"];
+  return "400";
+}
+
+function normalizeCssFontStyle(style?: string): CSSProperties["fontStyle"] {
+  return /italic|oblique/i.test(style || "") ? "italic" : "normal";
+}
+
+function cloneGeometryOverrides(
+  geometryOverrides: Record<string, PdfEditorBoxGeometry>
+): Record<string, PdfEditorBoxGeometry> {
+  return Object.fromEntries(Object.entries(geometryOverrides).map(([key, value]) => [key, { ...value }]));
+}
+
+function cloneLineGeometryOverrides(
+  lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem>
+): Record<string, PdfEditorGraphicLineItem> {
+  return Object.fromEntries(Object.entries(lineGeometryOverrides).map(([key, value]) => [key, { ...value }]));
+}
+
+function cloneImageGeometryOverrides(
+  imageGeometryOverrides: Record<string, PdfEditorImageItem>
+): Record<string, PdfEditorImageItem> {
+  return Object.fromEntries(Object.entries(imageGeometryOverrides).map(([key, value]) => [key, { ...value }]));
+}
+
+function snapshotKey(snapshot: EditorHistorySnapshot): string {
+  return JSON.stringify({
+    drafts: snapshot.drafts,
+    deletedIds: [...snapshot.deletedIds].sort(),
+    additions: snapshot.additions,
+    geometryOverrides: snapshot.geometryOverrides,
+    lineGeometryOverrides: snapshot.lineGeometryOverrides,
+    imageGeometryOverrides: snapshot.imageGeometryOverrides
+  });
+}
+
+function getFileNameFromPath(filePath: string): string {
+  return filePath.split(/[\\/]/).filter(Boolean).pop() || filePath;
 }
 
 function clampGeometry(geometry: PdfEditorBoxGeometry, pageSize: PdfEditorPageSize): PdfEditorBoxGeometry {

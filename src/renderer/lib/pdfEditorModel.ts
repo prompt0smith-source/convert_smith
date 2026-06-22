@@ -1,4 +1,4 @@
-import type { PdfEditorEdit, PdfEditorTextItem } from "../../main/types/conversion";
+import type { PdfEditorEdit, PdfEditorGraphicLineItem, PdfEditorImageItem, PdfEditorTextItem } from "../../main/types/conversion";
 
 export interface PdfEditorBoxGeometry {
   x: number;
@@ -50,7 +50,9 @@ export function countPdfEditorChanges(
   drafts: Record<string, string>,
   deletedIds: Set<string>,
   additions: PendingPdfEditorAddition[],
-  geometryOverrides: Record<string, PdfEditorBoxGeometry> = {}
+  geometryOverrides: Record<string, PdfEditorBoxGeometry> = {},
+  lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem> = {},
+  imageGeometryOverrides: Record<string, PdfEditorImageItem> = {}
 ): number {
   const edited = items.filter(
     (item) =>
@@ -59,7 +61,7 @@ export function countPdfEditorChanges(
       hasGeometryOverride(item, geometryOverrides[item.id])
   ).length;
   const added = additions.filter((item) => item.text.trim()).length;
-  return edited + added;
+  return edited + added + Object.keys(lineGeometryOverrides).length + Object.keys(imageGeometryOverrides).length;
 }
 
 export function buildPdfEditorEdits(
@@ -67,23 +69,35 @@ export function buildPdfEditorEdits(
   drafts: Record<string, string>,
   deletedIds: Set<string>,
   additions: PendingPdfEditorAddition[],
-  geometryOverrides: Record<string, PdfEditorBoxGeometry> = {}
+  geometryOverrides: Record<string, PdfEditorBoxGeometry> = {},
+  sourceLines: PdfEditorGraphicLineItem[] = [],
+  lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem> = {},
+  sourceImages: PdfEditorImageItem[] = [],
+  imageGeometryOverrides: Record<string, PdfEditorImageItem> = {}
 ): PdfEditorEdit[] {
   const edits: PdfEditorEdit[] = [];
   for (const item of items) {
     const geometry = geometryOverrides[item.id] || item;
 
     if (deletedIds.has(item.id)) {
+      const cover = createCoverGeometry(item);
       edits.push({
         action: "delete",
         pageNumber: item.pageNumber,
+        sourceIndex: item.sourceIndex,
         originalText: item.text,
+        coverX: cover.x,
+        coverY: cover.y,
+        coverWidth: cover.width,
+        coverHeight: cover.height,
         x: item.x,
         y: item.y,
         width: item.width,
         height: item.height,
         fontSize: item.fontSize,
         fontFamily: item.fontFamily,
+        fontWeight: item.fontWeight,
+        fontStyle: item.fontStyle,
         color: item.color
       });
       continue;
@@ -91,21 +105,25 @@ export function buildPdfEditorEdits(
 
     const draft = drafts[item.id];
     if ((draft !== undefined && draft !== item.text) || hasGeometryOverride(item, geometryOverrides[item.id])) {
+      const cover = createCoverGeometry(item);
       edits.push({
         action: "replace",
         pageNumber: item.pageNumber,
+        sourceIndex: item.sourceIndex,
         originalText: item.text,
         replacementText: draft ?? item.text,
-        coverX: item.x,
-        coverY: item.y,
-        coverWidth: item.width,
-        coverHeight: item.height,
+        coverX: cover.x,
+        coverY: cover.y,
+        coverWidth: cover.width,
+        coverHeight: cover.height,
         x: geometry.x,
         y: geometry.y,
         width: geometry.width,
         height: geometry.height,
         fontSize: item.fontSize,
         fontFamily: item.fontFamily,
+        fontWeight: item.fontWeight,
+        fontStyle: item.fontStyle,
         color: item.color
       });
     }
@@ -126,10 +144,54 @@ export function buildPdfEditorEdits(
     });
   }
 
+  for (const [lineId, adjusted] of Object.entries(lineGeometryOverrides)) {
+    const original = sourceLines.find((line) => line.id === lineId);
+    if (!original || !hasLineGeometryOverride(original, adjusted)) continue;
+    const cover = createLineCoverGeometry(original);
+    edits.push({
+      action: "line",
+      pageNumber: original.pageNumber,
+      coverX: cover.x,
+      coverY: cover.y,
+      coverWidth: cover.width,
+      coverHeight: cover.height,
+      x: adjusted.x,
+      y: adjusted.y,
+      width: adjusted.width,
+      height: adjusted.height,
+      fontSize: 10,
+      x1: adjusted.x1,
+      y1: adjusted.y1,
+      x2: adjusted.x2,
+      y2: adjusted.y2,
+      strokeWidth: adjusted.strokeWidth
+    });
+  }
+
+  for (const [imageId, adjusted] of Object.entries(imageGeometryOverrides)) {
+    const original = sourceImages.find((image) => image.id === imageId);
+    if (!original || !original.imageDataBase64 || !hasGeometryOverride(original, adjusted)) continue;
+    edits.push({
+      action: "image",
+      pageNumber: original.pageNumber,
+      coverX: original.x,
+      coverY: original.y,
+      coverWidth: original.width,
+      coverHeight: original.height,
+      x: adjusted.x,
+      y: adjusted.y,
+      width: adjusted.width,
+      height: adjusted.height,
+      fontSize: 10,
+      imageDataBase64: original.imageDataBase64,
+      mimeType: original.mimeType || "image/png"
+    });
+  }
+
   return edits;
 }
 
-function hasGeometryOverride(item: PdfEditorTextItem, geometry?: PdfEditorBoxGeometry): boolean {
+function hasGeometryOverride(item: PdfEditorBoxGeometry, geometry?: PdfEditorBoxGeometry): boolean {
   if (!geometry) return false;
   return (
     Math.abs(item.x - geometry.x) > 0.1 ||
@@ -137,4 +199,42 @@ function hasGeometryOverride(item: PdfEditorTextItem, geometry?: PdfEditorBoxGeo
     Math.abs(item.width - geometry.width) > 0.1 ||
     Math.abs(item.height - geometry.height) > 0.1
   );
+}
+
+function createCoverGeometry(item: PdfEditorTextItem): PdfEditorBoxGeometry {
+  const padX = Math.max(0.25, item.fontSize * 0.025);
+  const coverHeight = Math.min(
+    item.height,
+    Math.max(item.fontSize * 0.82, item.height * 0.58, 1)
+  );
+  const topInset = Math.max(0, (item.height - coverHeight) * 0.56);
+  return {
+    x: Math.max(0, item.x - padX),
+    y: Math.max(0, item.y + topInset),
+    width: item.width + padX * 2,
+    height: coverHeight
+  };
+}
+
+function hasLineGeometryOverride(original: PdfEditorGraphicLineItem, adjusted?: PdfEditorGraphicLineItem): boolean {
+  if (!adjusted) return false;
+  return (
+    Math.abs(original.x1 - adjusted.x1) > 0.1 ||
+    Math.abs(original.y1 - adjusted.y1) > 0.1 ||
+    Math.abs(original.x2 - adjusted.x2) > 0.1 ||
+    Math.abs(original.y2 - adjusted.y2) > 0.1 ||
+    Math.abs(original.strokeWidth - adjusted.strokeWidth) > 0.1
+  );
+}
+
+function createLineCoverGeometry(line: PdfEditorGraphicLineItem): PdfEditorBoxGeometry {
+  const pad = Math.max(1.5, line.strokeWidth * 1.8);
+  const x = Math.min(line.x1, line.x2) - pad;
+  const y = Math.min(line.y1, line.y2) - pad;
+  return {
+    x: Math.max(0, x),
+    y: Math.max(0, y),
+    width: Math.abs(line.x2 - line.x1) + pad * 2,
+    height: Math.abs(line.y2 - line.y1) + pad * 2
+  };
 }

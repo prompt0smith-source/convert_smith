@@ -6,6 +6,8 @@ export interface PdfReadingOrderLine {
   height: number;
   fontSize: number;
   fontFamily?: string;
+  fontWeight?: string;
+  fontStyle?: string;
   pdfFontId?: string;
   pdfFontName?: string;
   sourceIndex?: number;
@@ -90,6 +92,8 @@ function extractPdfTextFragments(
         height,
         fontSize: fontSize * layoutScale,
         fontFamily: getPdfFontFamily(textContent, item.fontName),
+        fontWeight: getPdfFontWeight(textContent, item.fontName),
+        fontStyle: getPdfFontStyle(textContent, item.fontName),
         pdfFontId: typeof item.fontName === "string" ? item.fontName : undefined,
         sourceIndex,
         right: x + width,
@@ -213,6 +217,8 @@ function composeReadingLine(bucket: PdfLineBucket): PdfReadingOrderLine {
     height: Math.max(1, bucket.bottom - bucket.y),
     fontSize: Math.max(1, bucket.avgFontSize),
     fontFamily: fragments.find((fragment) => fragment.fontFamily)?.fontFamily,
+    fontWeight: fragments.find((fragment) => fragment.fontWeight)?.fontWeight,
+    fontStyle: fragments.find((fragment) => fragment.fontStyle)?.fontStyle,
     pdfFontId: fragments.find((fragment) => fragment.pdfFontId)?.pdfFontId,
     pdfFontName: fragments.find((fragment) => fragment.pdfFontName)?.pdfFontName,
     sourceIndex: fragments[0]?.sourceIndex
@@ -228,6 +234,8 @@ function toReadingOrderLine(fragment: PdfTextFragment): PdfReadingOrderLine {
     height: fragment.height,
     fontSize: fragment.fontSize,
     fontFamily: fragment.fontFamily,
+    fontWeight: fragment.fontWeight,
+    fontStyle: fragment.fontStyle,
     pdfFontId: fragment.pdfFontId,
     pdfFontName: fragment.pdfFontName,
     sourceIndex: fragment.sourceIndex,
@@ -255,6 +263,18 @@ function getPdfFontFamily(textContent: any, fontName?: string): string | undefin
   if (!fontName || !textContent?.styles?.[fontName]) return undefined;
   const fontFamily = textContent.styles[fontName].fontFamily;
   return typeof fontFamily === "string" && fontFamily.trim() ? fontFamily : undefined;
+}
+
+function getPdfFontWeight(textContent: any, fontName?: string): string | undefined {
+  if (!fontName || !textContent?.styles?.[fontName]) return undefined;
+  const weight = textContent.styles[fontName].fontWeight;
+  return typeof weight === "string" && weight.trim() ? weight : undefined;
+}
+
+function getPdfFontStyle(textContent: any, fontName?: string): string | undefined {
+  if (!fontName || !textContent?.styles?.[fontName]) return undefined;
+  const style = textContent.styles[fontName].fontStyle;
+  return typeof style === "string" && style.trim() ? style : undefined;
 }
 
 function clamp(value: number, min: number, max: number): number {

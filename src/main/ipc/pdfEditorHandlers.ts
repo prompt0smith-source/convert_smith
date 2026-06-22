@@ -1,49 +1,31 @@
-import { app, ipcMain } from "electron";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+﻿import { ipcMain } from "electron";
 import type { StartPdfEditorSavePayload } from "../types/conversion.js";
 import { PathAccessRegistry } from "../services/PathAccessRegistry.js";
 import { PdfEditorService } from "../services/PdfEditorService.js";
 import { DebugLogService } from "../services/DebugLogService.js";
 
+const PDF_EDITOR_IPC_TIMEOUT_MS = 60000;
+
 export function registerPdfEditorHandlers(service: PdfEditorService, pathAccess: PathAccessRegistry): void {
   const debugLog = new DebugLogService();
 
   ipcMain.handle("pdfEditor:getTextLayer", async (_event, filePath: unknown) => {
-    if (typeof filePath !== "string") {
-      throw new Error("PDF 파일 경로가 올바르지 않습니다.");
-    }
-    const sourcePath = pathAccess.assertAllowed(filePath);
+    let sourcePath = "";
     try {
-      return await service.getTextLayer(sourcePath);
+      if (typeof filePath !== "string") {
+        throw new Error("PDF 파일 경로가 올바르지 않습니다.");
+      }
+      sourcePath = pathAccess.assertAllowed(filePath);
+      return await withIpcTimeout(
+        service.getTextLayer(sourcePath),
+        PDF_EDITOR_IPC_TIMEOUT_MS,
+        "PDF 분석 시간이 오래 걸려 Viewer를 열지 못했습니다. 파일이 매우 복잡하거나 손상되었을 수 있습니다."
+      );
     } catch (error) {
       const logPath = await debugLog.write({
         scope: "pdf-editor",
         message: "PDF editor text layer extraction failed.",
-        filePath: sourcePath,
-        error
-      });
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
-    }
-  });
-
-  ipcMain.handle("pdfEditor:getPagePreview", async (_event, filePath: unknown, pageNumber: unknown) => {
-    if (typeof filePath !== "string") {
-      throw new Error("PDF 파일 경로가 올바르지 않습니다.");
-    }
-    const sourcePath = pathAccess.assertAllowed(filePath);
-    try {
-      return await service.getPagePreview(sourcePath, typeof pageNumber === "number" ? pageNumber : 1);
-    } catch (error) {
-      const logPath = await debugLog.write({
-        scope: "pdf-editor",
-        message: "PDF editor page preview failed.",
-        filePath: sourcePath,
-        data: {
-          pageNumber: typeof pageNumber === "number" ? pageNumber : 1
-        },
+        filePath: sourcePath || (typeof filePath === "string" ? filePath : undefined),
         error
       });
       const message = error instanceof Error ? error.message : String(error);
@@ -79,36 +61,14 @@ export function registerPdfEditorHandlers(service: PdfEditorService, pathAccess:
       throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
     }
   });
+}
 
-  ipcMain.handle("pdfEditor:previewTextEdits", async (_event, payload: StartPdfEditorSavePayload) => {
-    if (!payload || typeof payload !== "object") {
-      throw new Error("PDF 편집 미리보기 요청이 올바르지 않습니다.");
-    }
-    const previewDir = path.join(app.getPath("userData"), "pdf-editor-previews");
-    await mkdir(previewDir, { recursive: true });
-    const normalizedPayload: StartPdfEditorSavePayload = {
-      ...payload,
-      sourcePath: pathAccess.assertAllowed(payload.sourcePath),
-      outputDir: previewDir,
-      outputName: `preview_${Date.now()}_${randomUUID().slice(0, 8)}`,
-      useDatedSubfolder: false
-    };
-    try {
-      const result = await service.saveTextEdits(normalizedPayload);
-      pathAccess.registerPaths([result.outputPath]);
-      return result;
-    } catch (error) {
-      const logPath = await debugLog.write({
-        scope: "pdf-editor",
-        message: "PDF editor native preview failed.",
-        filePath: normalizedPayload.sourcePath,
-        data: {
-          editCount: normalizedPayload.edits.length
-        },
-        error
-      });
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
-    }
+function withIpcTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
   });
 }
