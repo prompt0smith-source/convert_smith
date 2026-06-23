@@ -28,6 +28,7 @@ const api: ConvertSmithApi = {
   getPdfInfo: (path: string) => ipcRenderer.invoke("pdfTool:getInfo", path),
   startPdfTool: (payload: StartPdfToolPayload) => ipcRenderer.invoke("pdfTool:start", payload),
   getPdfEditorTextLayer: (path: string) => ipcRenderer.invoke("pdfEditor:getTextLayer", path),
+  previewPdfEditorTextEdits: (payload: StartPdfEditorSavePayload) => ipcRenderer.invoke("pdfEditor:previewTextEdits", payload),
   savePdfEditorTextEdits: (payload: StartPdfEditorSavePayload) => ipcRenderer.invoke("pdfEditor:saveTextEdits", payload),
   openPdfEditorWindow: (payload: PdfEditorWindowOpenPayload) => ipcRenderer.invoke("pdfEditor:openWindow", payload),
   getPdfEditorWindowContext: (token: string) => ipcRenderer.invoke("pdfEditor:getWindowContext", token),

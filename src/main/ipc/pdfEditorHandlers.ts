@@ -61,6 +61,33 @@ export function registerPdfEditorHandlers(service: PdfEditorService, pathAccess:
       throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
     }
   });
+
+  ipcMain.handle("pdfEditor:previewTextEdits", async (_event, payload: StartPdfEditorSavePayload) => {
+    if (!payload || typeof payload !== "object") {
+      throw new Error("PDF 편집 미리보기 요청이 올바르지 않습니다.");
+    }
+    const normalizedPayload: StartPdfEditorSavePayload = {
+      ...payload,
+      sourcePath: pathAccess.assertAllowed(payload.sourcePath)
+    };
+    try {
+      const result = await service.previewTextEdits(normalizedPayload);
+      pathAccess.registerPaths([result.outputPath]);
+      return result;
+    } catch (error) {
+      const logPath = await debugLog.write({
+        scope: "pdf-editor",
+        message: "PDF editor live preview failed.",
+        filePath: normalizedPayload.sourcePath,
+        data: {
+          editCount: normalizedPayload.edits.length
+        },
+        error
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
+    }
+  });
 }
 
 function withIpcTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

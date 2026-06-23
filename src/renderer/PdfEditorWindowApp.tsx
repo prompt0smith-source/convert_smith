@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type {
-  FilePreview,
   PdfEditorGraphicLineItem,
   PdfEditorImageItem,
   PdfEditorPageSize,
@@ -57,6 +56,7 @@ const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.8;
 const DRAG_THRESHOLD = 3;
 const HISTORY_LIMIT = 80;
+const CHROME_PDF_VIEWER_PAGE_MARGIN_PX = 8;
 
 type LineDragMode = "move" | "start" | "end";
 
@@ -64,11 +64,14 @@ export function PdfEditorWindowApp(): JSX.Element {
   const token = new URLSearchParams(window.location.search).get("token") || "";
   const pageFrameRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState>();
-  const previewCacheRef = useRef<Map<string, FilePreview>>(new Map());
+  const livePreviewSequenceRef = useRef(0);
+  const suppressNextPageLoadingRef = useRef(false);
 
   const [context, setContext] = useState<PdfEditorWindowContext>();
   const [layer, setLayer] = useState<PdfEditorTextLayer>();
-  const [pagePreview, setPagePreview] = useState<FilePreview>();
+  const [nativePreviewUrl, setNativePreviewUrl] = useState<string>();
+  const [sourceNativePreviewUrl, setSourceNativePreviewUrl] = useState<string>();
+  const [livePreviewKey, setLivePreviewKey] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
   const [additions, setAdditions] = useState<PendingPdfEditorAddition[]>([]);
@@ -97,9 +100,14 @@ export function PdfEditorWindowApp(): JSX.Element {
       .then(async (nextContext) => {
         if (cancelled) return;
         setContext(nextContext);
-        const nextLayer = await window.convertSmith.getPdfEditorTextLayer(nextContext.sourcePath);
+        const [nextLayer, nextNativePreviewUrl] = await Promise.all([
+          window.convertSmith.getPdfEditorTextLayer(nextContext.sourcePath),
+          window.convertSmith.getNativePreviewUrl(nextContext.sourcePath)
+        ]);
         if (cancelled) return;
         setLayer(nextLayer);
+        setNativePreviewUrl(nextNativePreviewUrl);
+        setSourceNativePreviewUrl(nextNativePreviewUrl);
       })
       .catch((loadError: unknown) => {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : "PDF Viewer를 열지 못했습니다.");
@@ -114,44 +122,15 @@ export function PdfEditorWindowApp(): JSX.Element {
   }, [token]);
 
   useEffect(() => {
-    if (!context) return undefined;
-    const cacheKey = `${context.sourcePath}::${selectedPage}`;
-    const cachedPreview = previewCacheRef.current.get(cacheKey);
-    if (cachedPreview) {
-      setPagePreview(cachedPreview);
-      setIsPageLoading(false);
-      setError(undefined);
+    if (!nativePreviewUrl) return undefined;
+    if (suppressNextPageLoadingRef.current) {
+      suppressNextPageLoadingRef.current = false;
       return undefined;
     }
-
-    let cancelled = false;
     setIsPageLoading(true);
-    setError(undefined);
-    window.convertSmith
-      .getFilePreview(context.sourcePath, selectedPage)
-      .then((preview) => {
-        if (cancelled) return;
-        if (preview.previewType !== "pdf_page" || !preview.dataUrl) {
-          throw new Error(buildPreviewErrorMessage(preview));
-        }
-        previewCacheRef.current.set(cacheKey, preview);
-        if (previewCacheRef.current.size > 24) {
-          const oldestKey = previewCacheRef.current.keys().next().value;
-          if (oldestKey) previewCacheRef.current.delete(oldestKey);
-        }
-        setPagePreview(preview);
-      })
-      .catch((previewError: unknown) => {
-        if (!cancelled) setError(previewError instanceof Error ? previewError.message : "PDF 페이지 렌더링에 실패했습니다.");
-      })
-      .finally(() => {
-        if (!cancelled) setIsPageLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [context?.sourcePath, selectedPage]);
+    const timer = window.setTimeout(() => setIsPageLoading(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [nativePreviewUrl, selectedPage]);
 
   const pageCount = layer?.pageCount || 0;
   const pageSize = useMemo(
@@ -183,11 +162,34 @@ export function PdfEditorWindowApp(): JSX.Element {
     [layer?.tables, selectedPage]
   );
   const currentPageAdditions = additions.filter((item) => item.pageNumber === selectedPage);
+  const currentEditorEdits = useMemo(
+    () =>
+      layer
+        ? buildPdfEditorEdits(
+            layer.items,
+            drafts,
+            deletedIds,
+            additions,
+            geometryOverrides,
+            layer.lines,
+            lineGeometryOverrides,
+            layer.images,
+            imageGeometryOverrides
+          )
+        : [],
+    [additions, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, layer, lineGeometryOverrides]
+  );
+  const currentEditorEditsKey = useMemo(() => createPdfEditorEditsKey(currentEditorEdits), [currentEditorEdits]);
+  const livePreviewSynced = currentEditorEditsKey !== "" && livePreviewKey === currentEditorEditsKey;
   const changedCount = useMemo(
     () => countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides, lineGeometryOverrides, imageGeometryOverrides),
     [additions, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, layer?.items, lineGeometryOverrides]
   );
   const shouldShowEditorOverlay = editMode || changedCount > 0;
+  const nativePageUrl = useMemo(
+    () => nativePreviewUrl ? createNativePdfPageUrl(nativePreviewUrl, selectedPage, zoom) : undefined,
+    [nativePreviewUrl, selectedPage, zoom]
+  );
 
   const createHistorySnapshot = (): EditorHistorySnapshot => ({
     drafts: { ...drafts },
@@ -252,6 +254,51 @@ export function PdfEditorWindowApp(): JSX.Element {
     setDeleteConfirmTarget(undefined);
   }, [editMode]);
 
+  useEffect(() => {
+    if (!context || !layer || !sourceNativePreviewUrl) return undefined;
+    if (isSaving) return undefined;
+
+    if (currentEditorEdits.length === 0) {
+      livePreviewSequenceRef.current += 1;
+      setLivePreviewKey("");
+      setNativePreviewUrl((current) => {
+        if (!current || current === sourceNativePreviewUrl) return current;
+        suppressNextPageLoadingRef.current = true;
+        return sourceNativePreviewUrl;
+      });
+      return undefined;
+    }
+
+    const sequence = livePreviewSequenceRef.current + 1;
+    livePreviewSequenceRef.current = sequence;
+    const editsKey = currentEditorEditsKey;
+    const timer = window.setTimeout(async () => {
+      try {
+        const previewResult = await window.convertSmith.previewPdfEditorTextEdits({
+          sourcePath: context.sourcePath,
+          outputDir: context.outputDir || "",
+          outputName: context.outputName,
+          useDatedSubfolder: false,
+          edits: currentEditorEdits
+        });
+        const nextNativePreviewUrl = await window.convertSmith.getNativePreviewUrl(previewResult.outputPath);
+        if (livePreviewSequenceRef.current !== sequence) return;
+        suppressNextPageLoadingRef.current = true;
+        setNativePreviewUrl(nextNativePreviewUrl);
+        setLivePreviewKey(editsKey);
+      } catch (previewError) {
+        if (livePreviewSequenceRef.current === sequence) {
+          setLivePreviewKey("");
+        }
+        console.warn("PDF editor live preview failed", previewError);
+      }
+    }, 280);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [context, currentEditorEdits, currentEditorEditsKey, isSaving, layer, sourceNativePreviewUrl]);
+
   const save = async () => {
     if (!context?.outputDir || !layer) {
       setError("저장할 폴더가 지정되지 않았습니다. 메인 창에서 저장 폴더를 지정한 뒤 Viewer를 다시 열어주세요.");
@@ -285,7 +332,7 @@ export function PdfEditorWindowApp(): JSX.Element {
         edits
       });
       const nextLayer = await window.convertSmith.getPdfEditorTextLayer(saveResult.outputPath);
-      previewCacheRef.current.clear();
+      const nextNativePreviewUrl = await window.convertSmith.getNativePreviewUrl(saveResult.outputPath);
       setResult(saveResult);
       setDrafts({});
       setDeletedIds(new Set());
@@ -299,6 +346,9 @@ export function PdfEditorWindowApp(): JSX.Element {
       setSelectedObject(undefined);
       setDeleteConfirmTarget(undefined);
       setLayer(nextLayer);
+      setNativePreviewUrl(nextNativePreviewUrl);
+      setSourceNativePreviewUrl(nextNativePreviewUrl);
+      setLivePreviewKey("");
       setSelectedPage((current) => Math.max(1, Math.min(nextLayer.pageCount || 1, current)));
       setContext((current) =>
         current
@@ -659,31 +709,33 @@ export function PdfEditorWindowApp(): JSX.Element {
 
       <div className="h-full overflow-auto px-8 pb-12 pt-16">
         <div className="mx-auto w-fit">
-          {pagePreview?.dataUrl && pageSize && (
+          {nativePageUrl && pageSize && (
             <div
               ref={pageFrameRef}
               className="relative bg-white shadow-2xl"
               onPointerDown={(event) => {
                 if (!editMode) return;
-                if (event.target === event.currentTarget || event.target instanceof HTMLImageElement) {
+                if (event.target === event.currentTarget || event.target instanceof HTMLIFrameElement) {
                   commitEditorSelection();
                 }
               }}
               style={{
-                width: `${pageSize.width * zoom}px`,
-                height: `${pageSize.height * zoom}px`
+                width: `${pageSize.width * zoom + CHROME_PDF_VIEWER_PAGE_MARGIN_PX * 2}px`,
+                height: `${pageSize.height * zoom + CHROME_PDF_VIEWER_PAGE_MARGIN_PX * 2}px`
               }}
             >
-              <img
-                src={pagePreview.dataUrl}
-                alt="PDF page"
-                draggable={false}
-                className="absolute inset-0 h-full w-full select-none"
+              <iframe
+                key={nativePageUrl}
+                src={nativePageUrl}
+                title="PDF page"
+                className="pdf-native-page-frame"
+                onLoad={() => setIsPageLoading(false)}
               />
 
               {shouldShowEditorOverlay && (
                 <div
-                  className="absolute inset-0"
+                  className="pdf-editor-page-surface"
+                  style={pageSurfaceStyle(pageSize, zoom)}
                   onPointerDown={(event) => {
                     if (event.target === event.currentTarget) commitEditorSelection();
                   }}
@@ -748,6 +800,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                       deleted={deletedIds.has(item.id)}
                       value={drafts[item.id] ?? item.text}
                       changed={drafts[item.id] !== undefined || Boolean(geometryOverrides[item.id])}
+                      previewSynced={livePreviewSynced}
                       confirmDeleteOpen={deleteConfirmTarget?.kind === "text" && deleteConfirmTarget.id === item.id}
                       onSelect={() => selectText(item)}
                       onStartDrag={(event) => startDrag(event, { kind: "text", id: item.id }, geometryOverrides[item.id] || item)}
@@ -765,6 +818,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                       zoom={zoom}
                       selected={selectedTarget?.kind === "add" && selectedTarget.id === item.id}
                       previewOnly={!editMode}
+                      previewSynced={livePreviewSynced}
                       confirmDeleteOpen={deleteConfirmTarget?.kind === "add" && deleteConfirmTarget.id === item.id}
                       onSelect={() => selectAddition(item)}
                       onStartDrag={(event) => startDrag(event, { kind: "add", id: item.id }, item)}
@@ -785,6 +839,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                   deletedIds={deletedIds}
                   geometryOverrides={geometryOverrides}
                   zoom={zoom}
+                  pageSize={pageSize}
                 />
               )}
             </div>
@@ -881,23 +936,10 @@ function WaterDropLoader(): JSX.Element {
   );
 }
 
-function buildPreviewErrorMessage(preview: FilePreview): string {
-  const details = preview.details || {};
-  const reason = getDetailString(details.error);
-  const pdfiumReason = getDetailString(details.pdfiumError);
-  const logPath = getDetailString(details.logPath);
-  return [
-    "PDF 페이지를 Viewer로 렌더링하지 못했습니다.",
-    reason ? `상세: ${reason}` : undefined,
-    pdfiumReason ? `PDFium: ${pdfiumReason}` : undefined,
-    logPath ? `Debug log: ${logPath}` : undefined
-  ].filter(Boolean).join("\n");
-}
-
-function getDetailString(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim()) return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return undefined;
+function createNativePdfPageUrl(nativePreviewUrl: string, pageNumber: number, zoom: number): string {
+  const safePageNumber = Math.max(1, Math.trunc(pageNumber) || 1);
+  const chromePdfZoom = Math.max(20, Math.min(300, Math.round(zoom * 75)));
+  return `${nativePreviewUrl}#page=${safePageNumber}&zoom=${chromePdfZoom}&toolbar=0&navpanes=0&scrollbar=0`;
 }
 
 function moveCaretToEnd(element: HTMLElement): void {
@@ -940,10 +982,12 @@ function InlineEditableText({
   onChange: (value: string) => void;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
+  const lastValueRef = useRef(value);
 
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    lastValueRef.current = value;
     element.innerText = value;
     element.focus();
     moveCaretToEnd(element);
@@ -952,11 +996,21 @@ function InlineEditableText({
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    if (document.activeElement === element) return;
     if (element.innerText !== value) {
+      lastValueRef.current = value;
       element.innerText = value;
-      if (document.activeElement === element) moveCaretToEnd(element);
     }
   }, [value]);
+
+  const commitCurrentText = () => {
+    const element = ref.current;
+    if (!element) return;
+    const nextValue = normalizeEditableDomText(element.innerText);
+    if (lastValueRef.current === nextValue) return;
+    lastValueRef.current = nextValue;
+    onChange(nextValue);
+  };
 
   return (
     <div
@@ -992,8 +1046,11 @@ function InlineEditableText({
         event.preventDefault();
         const text = event.clipboardData.getData("text/plain");
         document.execCommand("insertText", false, text);
+        window.setTimeout(commitCurrentText, 0);
       }}
-      onInput={(event) => onChange(event.currentTarget.innerText.replace(/\n$/, ""))}
+      onInput={commitCurrentText}
+      onKeyUp={commitCurrentText}
+      onCompositionEnd={commitCurrentText}
     />
   );
 }
@@ -1006,6 +1063,7 @@ function TextOverlayBox({
   deleted,
   value,
   changed,
+  previewSynced,
   confirmDeleteOpen,
   onSelect,
   onStartDrag,
@@ -1021,6 +1079,7 @@ function TextOverlayBox({
   deleted: boolean;
   value: string;
   changed: boolean;
+  previewSynced: boolean;
   confirmDeleteOpen: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -1052,8 +1111,8 @@ function TextOverlayBox({
             fontStyle={item.fontStyle}
             color={item.color}
             targetWidth={geometry.width * zoom}
-            fitToWidth={changed}
-            visible={changed}
+            fitToWidth
+            visible
             textId={item.id}
             onChange={onChange}
           />
@@ -1079,7 +1138,7 @@ function TextOverlayBox({
             />
           )}
         </>
-      ) : changed && !deleted ? (
+      ) : changed && !deleted && !previewSynced ? (
         <div
           className="pdf-editor-field-text"
           style={{
@@ -1336,6 +1395,7 @@ function AdditionOverlayBox({
   zoom,
   selected,
   previewOnly,
+  previewSynced,
   confirmDeleteOpen,
   onSelect,
   onStartDrag,
@@ -1348,6 +1408,7 @@ function AdditionOverlayBox({
   zoom: number;
   selected: boolean;
   previewOnly?: boolean;
+  previewSynced: boolean;
   confirmDeleteOpen: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -1399,7 +1460,7 @@ function AdditionOverlayBox({
             />
           )}
         </>
-      ) : previewOnly || item.text ? (
+      ) : (previewOnly || item.text) && !previewSynced ? (
         <div
           className="pdf-editor-field-text"
           style={{
@@ -1425,7 +1486,8 @@ function ViewerTextSelectionLayer({
   drafts,
   deletedIds,
   geometryOverrides,
-  zoom
+  zoom,
+  pageSize
 }: {
   items: PdfEditorTextItem[];
   additions: PendingPdfEditorAddition[];
@@ -1433,11 +1495,12 @@ function ViewerTextSelectionLayer({
   deletedIds: Set<string>;
   geometryOverrides: Record<string, PdfEditorBoxGeometry>;
   zoom: number;
+  pageSize: PdfEditorPageSize;
 }): JSX.Element {
   const selectableItems = items.filter((item) => !deletedIds.has(item.id));
 
   return (
-    <div className="pdf-viewer-text-selection-layer" aria-label="PDF 텍스트 선택 레이어">
+    <div className="pdf-viewer-text-selection-layer" style={pageSurfaceStyle(pageSize, zoom)} aria-label="PDF 텍스트 선택 레이어">
       {selectableItems.map((item) => {
         const geometry = geometryOverrides[item.id] || item;
         const value = drafts[item.id] ?? item.text;
@@ -1478,6 +1541,18 @@ function ViewerTextSelectionLayer({
       ))}
     </div>
   );
+}
+
+function pageSurfaceStyle(pageSize: PdfEditorPageSize, zoom: number): CSSProperties {
+  return {
+    position: "absolute",
+    left: `${CHROME_PDF_VIEWER_PAGE_MARGIN_PX}px`,
+    top: `${CHROME_PDF_VIEWER_PAGE_MARGIN_PX}px`,
+    width: `${pageSize.width * zoom}px`,
+    height: `${pageSize.height * zoom}px`,
+    zIndex: 8,
+    overflow: "hidden"
+  };
 }
 
 function boxStyle(geometry: PdfEditorBoxGeometry, zoom: number): CSSProperties {
@@ -1750,6 +1825,10 @@ function snapshotKey(snapshot: EditorHistorySnapshot): string {
     lineGeometryOverrides: snapshot.lineGeometryOverrides,
     imageGeometryOverrides: snapshot.imageGeometryOverrides
   });
+}
+
+function createPdfEditorEditsKey(edits: unknown[]): string {
+  return edits.length > 0 ? JSON.stringify(edits) : "";
 }
 
 function getFileNameFromPath(filePath: string): string {

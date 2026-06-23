@@ -1,5 +1,6 @@
 ﻿import path from "node:path";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import { setFillingColor } from "pdf-lib/cjs/api/colors";
 import {
@@ -53,6 +54,7 @@ export class PdfEditorService {
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly fonts = new PdfEditorFontService();
   private readonly nativeTextEditor = new PdfNativeEditOrchestrator();
+  private readonly previewTempDirs: string[] = [];
 
   async getTextLayer(inputPath: string): Promise<PdfEditorTextLayer> {
     const sourcePath = await this.validatePdfInput(inputPath);
@@ -368,6 +370,31 @@ export class PdfEditorService {
       addedCount,
       warnings: Array.from(new Set(warnings))
     };
+  }
+
+  async previewTextEdits(payload: StartPdfEditorSavePayload): Promise<PdfEditorSaveResult> {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "convert-smith-pdf-editor-preview-"));
+    try {
+      const result = await this.saveTextEdits({
+        ...payload,
+        outputDir: tempDir,
+        outputName: "preview",
+        useDatedSubfolder: false
+      });
+      this.previewTempDirs.push(tempDir);
+      this.cleanupOldPreviewDirs();
+      return result;
+    } catch (error) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private cleanupOldPreviewDirs(): void {
+    while (this.previewTempDirs.length > 8) {
+      const oldDir = this.previewTempDirs.shift();
+      if (oldDir) void rm(oldDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   private normalizeEdits(edits: PdfEditorEdit[]): PdfEditorEdit[] {
