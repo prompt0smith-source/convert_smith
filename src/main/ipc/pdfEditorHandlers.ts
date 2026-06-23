@@ -33,6 +33,36 @@ export function registerPdfEditorHandlers(service: PdfEditorService, pathAccess:
     }
   });
 
+  ipcMain.handle("pdfEditor:getPagePreview", async (_event, filePath: unknown, pageNumber: unknown, scale: unknown) => {
+    let sourcePath = "";
+    try {
+      if (typeof filePath !== "string") {
+        throw new Error("PDF 파일 경로가 올바르지 않습니다.");
+      }
+      sourcePath = pathAccess.assertAllowed(filePath);
+      const safePageNumber = typeof pageNumber === "number" ? pageNumber : 1;
+      const safeScale = scale === 1 || scale === 2 || scale === 3 ? scale : 2;
+      return await withIpcTimeout(
+        service.getPagePreview(sourcePath, safePageNumber, safeScale),
+        PDF_EDITOR_IPC_TIMEOUT_MS,
+        "PDF 페이지 미리보기 생성 시간이 오래 걸려 Viewer에 표시하지 못했습니다."
+      );
+    } catch (error) {
+      const logPath = await debugLog.write({
+        scope: "pdf-editor",
+        message: "PDF editor page preview failed.",
+        filePath: sourcePath || (typeof filePath === "string" ? filePath : undefined),
+        data: {
+          pageNumber,
+          scale
+        },
+        error
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(logPath ? `${message}\nDebug log: ${logPath}` : message);
+    }
+  });
+
   ipcMain.handle("pdfEditor:saveTextEdits", async (_event, payload: StartPdfEditorSavePayload) => {
     if (!payload || typeof payload !== "object") {
       throw new Error("PDF 편집 저장 요청이 올바르지 않습니다.");

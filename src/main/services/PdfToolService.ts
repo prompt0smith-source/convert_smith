@@ -265,7 +265,7 @@ export class PdfToolService {
       signatureImagePath,
       pages,
       opacity: Math.min(1, Math.max(0.1, options.opacity)),
-      flattenSignedPages: typeof options.flattenSignedPages === "boolean" ? options.flattenSignedPages : true,
+      flattenSignedPages: typeof options.flattenSignedPages === "boolean" ? options.flattenSignedPages : false,
       renderScale: options.renderScale === 1 || options.renderScale === 3 ? options.renderScale : 2,
       placement: {
         ...options.placement,

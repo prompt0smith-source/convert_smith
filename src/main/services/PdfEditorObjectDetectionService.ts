@@ -17,6 +17,13 @@ interface RawLineSegment {
   x2: number;
   y2: number;
   strokeWidth: number;
+  dashArray?: number[];
+  dashPhase?: number;
+}
+
+interface RawPathSegments {
+  strokeSegments: RawLineSegment[];
+  fillLineSegments: RawLineSegment[];
 }
 
 interface Point {
@@ -70,10 +77,14 @@ async function extractEditorGraphicLines(
     const ops = pdfjs.OPS;
     const matrixStack: number[][] = [];
     const lineWidthStack: number[] = [];
+    const dashStack: Array<{ dashArray?: number[]; dashPhase?: number }> = [];
     const segments: RawLineSegment[] = [];
     let currentMatrix = [1, 0, 0, 1, 0, 0];
     let currentLineWidth = 1;
+    let currentDashArray: number[] | undefined;
+    let currentDashPhase = 0;
     let pendingPath: RawLineSegment[] = [];
+    let pendingFillLines: RawLineSegment[] = [];
 
     for (let index = 0; index < operatorList.fnArray.length; index += 1) {
       const fn = operatorList.fnArray[index];
@@ -82,11 +93,15 @@ async function extractEditorGraphicLines(
       if (fn === ops.save) {
         matrixStack.push([...currentMatrix]);
         lineWidthStack.push(currentLineWidth);
+        dashStack.push({ dashArray: currentDashArray ? [...currentDashArray] : undefined, dashPhase: currentDashPhase });
         continue;
       }
       if (fn === ops.restore) {
         currentMatrix = matrixStack.pop() || [1, 0, 0, 1, 0, 0];
         currentLineWidth = lineWidthStack.pop() || 1;
+        const dash = dashStack.pop();
+        currentDashArray = dash?.dashArray;
+        currentDashPhase = dash?.dashPhase || 0;
         continue;
       }
       if (fn === ops.transform && Array.isArray(args)) {
@@ -97,26 +112,69 @@ async function extractEditorGraphicLines(
         currentLineWidth = Math.max(0.2, Number(args[0]) || 1);
         continue;
       }
+      if (fn === ops.setDash && Array.isArray(args)) {
+        currentDashArray = Array.isArray(args[0])
+          ? args[0].map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
+          : undefined;
+        currentDashPhase = Number.isFinite(Number(args[1])) ? Number(args[1]) : 0;
+        continue;
+      }
       if (fn === ops.constructPath) {
-        pendingPath.push(...readConstructedPathSegments(pdfjs, ops, viewport, currentMatrix, args, currentLineWidth));
+        const nextPath = readConstructedPathSegments(pdfjs, ops, viewport, currentMatrix, args, currentLineWidth, currentDashArray, currentDashPhase);
+        pendingPath.push(...nextPath.strokeSegments);
+        pendingFillLines.push(...nextPath.fillLineSegments);
+        continue;
+      }
+      if (isFillStrokeOperator(ops, fn)) {
+        segments.push(...pendingFillLines, ...pendingPath);
+        pendingPath = [];
+        pendingFillLines = [];
         continue;
       }
       if (isStrokeOperator(ops, fn)) {
         segments.push(...pendingPath);
         pendingPath = [];
+        pendingFillLines = [];
+        continue;
+      }
+      if (isFillOperator(ops, fn)) {
+        segments.push(...pendingFillLines);
+        pendingPath = [];
+        pendingFillLines = [];
         continue;
       }
       if (isPathResetOperator(ops, fn)) {
         pendingPath = [];
+        pendingFillLines = [];
       }
     }
 
-    return segments
+    return dedupeRawLineSegments(segments)
       .map((segment, index) => toGraphicLine(pageNumber, segment, index))
       .filter((line) => Math.max(line.width, line.height) >= 8);
   } catch {
     return [];
   }
+}
+
+function dedupeRawLineSegments(segments: RawLineSegment[]): RawLineSegment[] {
+  const seen = new Set<string>();
+  const result: RawLineSegment[] = [];
+  for (const segment of segments) {
+    const key = [
+      Math.round(segment.x1 * 2) / 2,
+      Math.round(segment.y1 * 2) / 2,
+      Math.round(segment.x2 * 2) / 2,
+      Math.round(segment.y2 * 2) / 2,
+      Math.round(segment.strokeWidth * 2) / 2,
+      segment.dashArray?.join(",") || "",
+      Math.round((segment.dashPhase || 0) * 2) / 2
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(segment);
+  }
+  return result;
 }
 
 function readConstructedPathSegments(
@@ -125,11 +183,14 @@ function readConstructedPathSegments(
   viewport: any,
   matrix: number[],
   args: any,
-  strokeWidth: number
-): RawLineSegment[] {
+  strokeWidth: number,
+  dashArray?: number[],
+  dashPhase = 0
+): RawPathSegments {
   const pathOps = Array.isArray(args?.[0]) ? args[0] : [];
   const coords = Array.isArray(args?.[1]) ? args[1] : [];
-  const segments: RawLineSegment[] = [];
+  const strokeSegments: RawLineSegment[] = [];
+  const fillLineSegments: RawLineSegment[] = [];
   let offset = 0;
   let current: Point | undefined;
   let pathStart: Point | undefined;
@@ -143,7 +204,7 @@ function readConstructedPathSegments(
     }
     if (op === ops.lineTo) {
       const next = toViewportPoint(pdfjs, viewport, matrix, Number(coords[offset]), Number(coords[offset + 1]));
-      if (current) segments.push({ x1: current.x, y1: current.y, x2: next.x, y2: next.y, strokeWidth });
+      if (current) strokeSegments.push(createRawLineSegment(current.x, current.y, next.x, next.y, strokeWidth, dashArray, dashPhase));
       current = next;
       offset += 2;
       continue;
@@ -162,8 +223,10 @@ function readConstructedPathSegments(
       for (let index = 0; index < points.length; index += 1) {
         const start = points[index];
         const end = points[(index + 1) % points.length];
-        segments.push({ x1: start.x, y1: start.y, x2: end.x, y2: end.y, strokeWidth });
+        strokeSegments.push(createRawLineSegment(start.x, start.y, end.x, end.y, strokeWidth, dashArray, dashPhase));
       }
+      const thinFillLine = createThinFilledRectangleLine(points, strokeWidth);
+      if (thinFillLine) fillLineSegments.push(thinFillLine);
       current = points[0];
       pathStart = points[0];
       offset += 4;
@@ -186,13 +249,52 @@ function readConstructedPathSegments(
     }
     if (op === ops.closePath) {
       if (current && pathStart) {
-        segments.push({ x1: current.x, y1: current.y, x2: pathStart.x, y2: pathStart.y, strokeWidth });
+        strokeSegments.push(createRawLineSegment(current.x, current.y, pathStart.x, pathStart.y, strokeWidth, dashArray, dashPhase));
         current = pathStart;
       }
     }
   }
 
-  return segments;
+  return { strokeSegments, fillLineSegments };
+}
+
+function createRawLineSegment(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  strokeWidth: number,
+  dashArray?: number[],
+  dashPhase = 0
+): RawLineSegment {
+  return {
+    x1,
+    y1,
+    x2,
+    y2,
+    strokeWidth,
+    dashArray: dashArray?.length ? [...dashArray] : undefined,
+    dashPhase
+  };
+}
+
+function createThinFilledRectangleLine(points: Point[], fallbackStrokeWidth: number): RawLineSegment | undefined {
+  const left = Math.min(...points.map((point) => point.x));
+  const right = Math.max(...points.map((point) => point.x));
+  const top = Math.min(...points.map((point) => point.y));
+  const bottom = Math.max(...points.map((point) => point.y));
+  const width = right - left;
+  const height = bottom - top;
+  const thinLimit = Math.max(0.75, Math.min(5.5, Math.max(width, height) * 0.04));
+  if (width >= 8 && height > 0 && height <= thinLimit) {
+    const y = top + height / 2;
+    return createRawLineSegment(left, y, right, y, Math.max(fallbackStrokeWidth, height), undefined, 0);
+  }
+  if (height >= 8 && width > 0 && width <= thinLimit) {
+    const x = left + width / 2;
+    return createRawLineSegment(x, top, x, bottom, Math.max(fallbackStrokeWidth, width), undefined, 0);
+  }
+  return undefined;
 }
 
 function toViewportPoint(pdfjs: any, viewport: any, matrix: number[], x: number, y: number): Point {
@@ -231,6 +333,8 @@ function toGraphicLine(pageNumber: number, segment: RawLineSegment, index: numbe
     x2: roundPoint(segment.x2),
     y2: roundPoint(segment.y2),
     strokeWidth: roundPoint(strokeWidth),
+    dashArray: segment.dashArray?.map(roundPoint),
+    dashPhase: segment.dashPhase ? roundPoint(segment.dashPhase) : undefined,
     orientation
   };
 }
@@ -345,17 +449,27 @@ function lineCrosses(
 function isStrokeOperator(ops: Record<string, number>, fn: number): boolean {
   return (
     fn === ops.stroke ||
-    fn === ops.closeStroke ||
+    fn === ops.closeStroke
+  );
+}
+
+function isFillStrokeOperator(ops: Record<string, number>, fn: number): boolean {
+  return (
     fn === ops.fillStroke ||
     fn === ops.eoFillStroke
+  );
+}
+
+function isFillOperator(ops: Record<string, number>, fn: number): boolean {
+  return (
+    fn === ops.fill ||
+    fn === ops.eoFill
   );
 }
 
 function isPathResetOperator(ops: Record<string, number>, fn: number): boolean {
   return (
     fn === ops.endPath ||
-    fn === ops.fill ||
-    fn === ops.eoFill ||
     fn === ops.clip ||
     fn === ops.eoClip
   );

@@ -199,6 +199,8 @@ export interface PdfEditorGraphicLineItem {
   x2: number;
   y2: number;
   strokeWidth: number;
+  dashArray?: number[];
+  dashPhase?: number;
   orientation: "horizontal" | "vertical" | "diagonal";
 }
 
@@ -226,6 +228,15 @@ export interface PdfEditorTextLayer {
   warnings?: string[];
 }
 
+export interface PdfEditorPagePreview {
+  path: string;
+  pageNumber: number;
+  pageCount: number;
+  scale: 1 | 2 | 3;
+  dataUrl: string;
+  warning?: string;
+}
+
 export interface PdfEditorEdit {
   action: PdfEditorEditAction;
   pageNumber: number;
@@ -250,6 +261,8 @@ export interface PdfEditorEdit {
   x2?: number;
   y2?: number;
   strokeWidth?: number;
+  dashArray?: number[];
+  dashPhase?: number;
   imageDataBase64?: string;
   mimeType?: "image/png";
 }

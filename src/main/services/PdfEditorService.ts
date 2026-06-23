@@ -15,7 +15,7 @@ import {
 } from "pdf-lib/cjs/api/operators";
 import type PDFName from "pdf-lib/cjs/core/objects/PDFName";
 import fontkit from "@pdf-lib/fontkit";
-import { createPdfjsDocumentOptions } from "./PdfjsAssetService.js";
+import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 import { applyLocalFontMatches, warmPdfPageFonts } from "./LocalFontMatchService.js";
 import { extractPdfReadingOrderFragments } from "./PdfReadingOrderService.js";
 import { applyPdfTextColors } from "./PdfTextColorService.js";
@@ -32,6 +32,7 @@ import {
 } from "./PdfEditorFontService.js";
 import type {
   PdfEditorEdit,
+  PdfEditorPagePreview,
   PdfEditorPageSize,
   PdfEditorSaveResult,
   PdfEditorTextItem,
@@ -313,7 +314,9 @@ export class PdfEditorService {
             y: clamp(pageHeight - (edit.y2 ?? edit.y + edit.height), 0, pageHeight)
           },
           thickness: clamp(edit.strokeWidth ?? 1, 0.2, 24),
-          color: rgb(0, 0, 0)
+          color: rgb(0, 0, 0),
+          dashArray: edit.dashArray?.length ? edit.dashArray.map((value) => clamp(value, 0.1, 200)) : undefined,
+          dashPhase: edit.dashPhase === undefined ? undefined : clamp(edit.dashPhase, 0, 200)
         });
         lineEditedCount += 1;
         continue;
@@ -390,6 +393,37 @@ export class PdfEditorService {
     }
   }
 
+  async getPagePreview(inputPath: string, pageNumber: number, scale: 1 | 2 | 3 = 2): Promise<PdfEditorPagePreview> {
+    const sourcePath = await this.validatePdfInput(inputPath);
+    const safeScale = ([1, 2, 3] as const).includes(scale) ? scale : 2;
+    const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
+    const canvasModule = await importRuntime<typeof import("@napi-rs/canvas")>("@napi-rs/canvas");
+    preparePdfCanvasFonts(canvasModule);
+    const data = new Uint8Array(await readFile(sourcePath));
+    const document = await pdfjs.getDocument(createPdfjsDocumentOptions(data)).promise;
+    const safePageNumber = Math.max(1, Math.min(document.numPages, Math.trunc(pageNumber) || 1));
+    const page = await document.getPage(safePageNumber);
+    const viewport = page.getViewport({ scale: safeScale });
+    const canvas = canvasModule.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    const context = canvas.getContext("2d");
+    context.save();
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.restore();
+    await page.render({
+      canvasContext: context as never,
+      viewport
+    }).promise;
+    const pngBuffer = canvas.toBuffer("image/png");
+    return {
+      path: sourcePath,
+      pageNumber: safePageNumber,
+      pageCount: document.numPages,
+      scale: safeScale,
+      dataUrl: `data:image/png;base64,${pngBuffer.toString("base64")}`
+    };
+  }
+
   private cleanupOldPreviewDirs(): void {
     while (this.previewTempDirs.length > 8) {
       const oldDir = this.previewTempDirs.shift();
@@ -428,6 +462,10 @@ export class PdfEditorService {
           x2: edit.x2 === undefined ? undefined : finiteNumber(edit.x2, 0),
           y2: edit.y2 === undefined ? undefined : finiteNumber(edit.y2, 0),
           strokeWidth: edit.strokeWidth === undefined ? undefined : finiteNumber(edit.strokeWidth, 1),
+          dashArray: Array.isArray(edit.dashArray)
+            ? edit.dashArray.map((value) => finiteNumber(value, 0)).filter((value) => value > 0).slice(0, 16)
+            : undefined,
+          dashPhase: edit.dashPhase === undefined ? undefined : finiteNumber(edit.dashPhase, 0),
           imageDataBase64: typeof edit.imageDataBase64 === "string" ? edit.imageDataBase64 : undefined,
           mimeType: edit.mimeType === "image/png" ? edit.mimeType : undefined
         }

@@ -164,7 +164,9 @@ export function buildPdfEditorEdits(
       y1: adjusted.y1,
       x2: adjusted.x2,
       y2: adjusted.y2,
-      strokeWidth: adjusted.strokeWidth
+      strokeWidth: adjusted.strokeWidth,
+      dashArray: adjusted.dashArray,
+      dashPhase: adjusted.dashPhase
     });
   }
 
@@ -223,8 +225,17 @@ function hasLineGeometryOverride(original: PdfEditorGraphicLineItem, adjusted?: 
     Math.abs(original.y1 - adjusted.y1) > 0.1 ||
     Math.abs(original.x2 - adjusted.x2) > 0.1 ||
     Math.abs(original.y2 - adjusted.y2) > 0.1 ||
-    Math.abs(original.strokeWidth - adjusted.strokeWidth) > 0.1
+    Math.abs(original.strokeWidth - adjusted.strokeWidth) > 0.1 ||
+    !dashPatternsEqual(original.dashArray, adjusted.dashArray) ||
+    Math.abs((original.dashPhase || 0) - (adjusted.dashPhase || 0)) > 0.1
   );
+}
+
+function dashPatternsEqual(a?: number[], b?: number[]): boolean {
+  const left = a || [];
+  const right = b || [];
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => Math.abs(value - right[index]) <= 0.1);
 }
 
 function createLineCoverGeometry(line: PdfEditorGraphicLineItem): PdfEditorBoxGeometry {

@@ -10,6 +10,7 @@ type ProgressCallback = (progress: number, message: string) => void;
 type PageCallback = (pageNumber: number, pngBuffer: Buffer) => Promise<void>;
 type ElectronModule = typeof import("electron");
 const MAX_RENDER_ATTEMPTS = 3;
+const RENDER_QUEUE_COOLDOWN_MS = 180;
 
 const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
   specifier: string
@@ -29,11 +30,21 @@ interface Rgb {
 }
 
 export class PdfiumRenderService {
+  private static renderQueue: Promise<void> = Promise.resolve();
+
   isAvailable(): boolean {
     return Boolean(process.versions.electron);
   }
 
   async renderPage(
+    inputPath: string,
+    pageNumber: number,
+    scale: 1 | 2 | 3
+  ): Promise<{ pageNumber: number; pageCount: number; pngBuffer: Buffer }> {
+    return this.enqueueRender(() => this.renderPageUnsafe(inputPath, pageNumber, scale));
+  }
+
+  private async renderPageUnsafe(
     inputPath: string,
     pageNumber: number,
     scale: 1 | 2 | 3
@@ -65,6 +76,7 @@ export class PdfiumRenderService {
     });
 
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    this.attachRendererCrashGuards(win);
 
     try {
       const sourcePage = sourcePdf.getPage(pageIndex);
@@ -88,18 +100,20 @@ export class PdfiumRenderService {
       }
       return { pageNumber: safePageNumber, pageCount, pngBuffer };
     } finally {
-      if (win.webContents.debugger.isAttached()) {
-        try {
-          win.webContents.debugger.detach();
-        } catch {
-          // Ignore detach failures while the hidden renderer is closing.
-        }
-      }
-      win.destroy();
+      this.destroyRenderWindow(win);
     }
   }
 
   async renderPages(
+    inputPath: string,
+    scale: 1 | 2 | 3,
+    onProgress: ProgressCallback,
+    onPage: PageCallback
+  ): Promise<void> {
+    return this.enqueueRender(() => this.renderPagesUnsafe(inputPath, scale, onProgress, onPage));
+  }
+
+  private async renderPagesUnsafe(
     inputPath: string,
     scale: 1 | 2 | 3,
     onProgress: ProgressCallback,
@@ -130,6 +144,7 @@ export class PdfiumRenderService {
     });
 
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    this.attachRendererCrashGuards(win);
 
     try {
       for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
@@ -168,14 +183,51 @@ export class PdfiumRenderService {
         ].join("\n")
       );
     } finally {
-      if (win.webContents.debugger.isAttached()) {
-        try {
-          win.webContents.debugger.detach();
-        } catch {
-          // Ignore detach failures while the hidden renderer is closing.
-        }
+      this.destroyRenderWindow(win);
+    }
+  }
+
+  private enqueueRender<T>(task: () => Promise<T>): Promise<T> {
+    const run = PdfiumRenderService.renderQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const result = await task();
+        await this.delay(RENDER_QUEUE_COOLDOWN_MS);
+        return result;
+      });
+    PdfiumRenderService.renderQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private attachRendererCrashGuards(win: BrowserWindow): void {
+    win.webContents.on("render-process-gone", (_event, details) => {
+      const reason = details.reason || "unknown";
+      const exitCode = typeof details.exitCode === "number" ? details.exitCode : "unknown";
+      console.warn(`PDFium hidden renderer stopped: ${reason} (${exitCode})`);
+    });
+    win.webContents.on("unresponsive", () => {
+      console.warn("PDFium hidden renderer became unresponsive.");
+    });
+  }
+
+  private destroyRenderWindow(win: BrowserWindow): void {
+    try {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed() && win.webContents.debugger.isAttached()) {
+        win.webContents.debugger.detach();
       }
-      win.destroy();
+    } catch {
+      // Ignore detach failures while the hidden renderer is closing.
+    }
+
+    try {
+      if (!win.isDestroyed()) {
+        win.destroy();
+      }
+    } catch {
+      // Ignore close failures after a renderer crash.
     }
   }
 

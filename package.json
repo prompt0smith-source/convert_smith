@@ -17,7 +17,9 @@
     "dist": "node scripts/package-electron.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "smoke:pdf-editor": "node scripts/pdf-editor-smoke.mjs",
-    "test:pdf-editor": "node scripts/pdf-editor-smoke.mjs"
+    "test:pdf-editor": "node scripts/pdf-editor-smoke.mjs",
+    "test:pdf-edit-harness": "node tools/pdf-edit-harness/run-pdf-edit-harness.mjs",
+    "smoke:pdf-edit-harness": "node tools/pdf-edit-harness/run-pdf-edit-harness.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.80",

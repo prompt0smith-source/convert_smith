@@ -401,41 +401,45 @@ body.convert-smith-grabbing * {
   height: 100%;
   border: 0;
   background: #fff;
+  pointer-events: none;
+}
+
+.pdf-rendered-page-image {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+  pointer-events: none;
+  background: #fff;
+}
+
+.pdf-editor-clone-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  background: #fff;
+  pointer-events: none;
+}
+
+.pdf-editor-clone-text {
+  position: absolute;
+  z-index: 4;
+  display: inline-block;
+  overflow: hidden;
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: plaintext;
+  user-select: none;
 }
 
 .pdf-editor-page-surface {
   position: absolute;
-  pointer-events: auto;
-}
-
-.pdf-viewer-text-selection-layer {
-  position: absolute;
   z-index: 8;
   pointer-events: auto;
-  cursor: text;
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-.pdf-viewer-selectable-text {
-  position: absolute;
-  display: inline-block;
-  overflow: hidden;
-  white-space: pre;
-  word-break: keep-all;
-  direction: ltr;
-  text-align: left;
-  unicode-bidi: plaintext;
-  color: transparent !important;
-  opacity: 1;
-  cursor: text;
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-.pdf-viewer-selectable-text::selection {
-  background: rgba(37, 99, 235, 0.38);
-  color: transparent;
 }
 
 .pdf-editor-object-layer {

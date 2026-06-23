@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("convertSmith", {
   getPdfInfo: (filePath) => ipcRenderer.invoke("pdfTool:getInfo", filePath),
   startPdfTool: (payload) => ipcRenderer.invoke("pdfTool:start", payload),
   getPdfEditorTextLayer: (filePath) => ipcRenderer.invoke("pdfEditor:getTextLayer", filePath),
+  getPdfEditorPagePreview: (filePath, pageNumber, scale) =>
+    ipcRenderer.invoke("pdfEditor:getPagePreview", filePath, pageNumber, scale),
   previewPdfEditorTextEdits: (payload) => ipcRenderer.invoke("pdfEditor:previewTextEdits", payload),
   savePdfEditorTextEdits: (payload) => ipcRenderer.invoke("pdfEditor:saveTextEdits", payload),
   openPdfEditorWindow: (payload) => ipcRenderer.invoke("pdfEditor:openWindow", payload),

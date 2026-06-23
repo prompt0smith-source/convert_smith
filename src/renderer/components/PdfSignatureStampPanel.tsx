@@ -103,7 +103,7 @@ export function PdfSignatureStampPanel({
         pages: [selectedPage],
         placement: DEFAULT_PLACEMENT,
         opacity: 0.9,
-        flattenSignedPages: true,
+        flattenSignedPages: false,
         renderScale: 2
       });
       setPageMode("current");
@@ -391,7 +391,7 @@ export function PdfSignatureStampPanel({
         <label className="flex items-start gap-2 text-sm text-stone-700">
           <input
             type="checkbox"
-            checked={options?.flattenSignedPages ?? true}
+            checked={options?.flattenSignedPages ?? false}
             disabled={disabled}
             onChange={(event) => update({ flattenSignedPages: event.target.checked })}
             className="mt-0.5 h-4 w-4 accent-emerald-700"

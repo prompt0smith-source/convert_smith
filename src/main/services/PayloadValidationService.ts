@@ -180,7 +180,7 @@ function normalizeSignatureStamp(value: unknown) {
       keepAspectRatio
     },
     opacity: clampNumber(raw.opacity, 0.1, 1, "서명 투명도 값이 올바르지 않습니다."),
-    flattenSignedPages: typeof raw.flattenSignedPages === "boolean" ? raw.flattenSignedPages : true,
+    flattenSignedPages: typeof raw.flattenSignedPages === "boolean" ? raw.flattenSignedPages : false,
     renderScale: normalizeEnum(raw.renderScale, [1, 2, 3] as const, "서명 페이지 이미지화 배율이 올바르지 않습니다.", 2)
   };
 }
