@@ -85,7 +85,13 @@ export function buildPdfEditorEdits(
         action: "delete",
         pageNumber: item.pageNumber,
         sourceIndex: item.sourceIndex,
+        nativeSpanId: item.nativeSpanId,
+        saveMode: "delete_original",
         originalText: item.text,
+        originalX: item.x,
+        originalY: item.y,
+        originalWidth: item.width,
+        originalHeight: item.height,
         coverX: cover.x,
         coverY: cover.y,
         coverWidth: cover.width,
@@ -104,14 +110,21 @@ export function buildPdfEditorEdits(
     }
 
     const draft = drafts[item.id];
-    if ((draft !== undefined && draft !== item.text) || hasGeometryOverride(item, geometryOverrides[item.id])) {
+    const geometryChanged = hasGeometryOverride(item, geometryOverrides[item.id]);
+    if ((draft !== undefined && draft !== item.text) || geometryChanged) {
       const cover = createCoverGeometry(item);
       edits.push({
         action: "replace",
         pageNumber: item.pageNumber,
         sourceIndex: item.sourceIndex,
+        nativeSpanId: item.nativeSpanId,
+        saveMode: geometryChanged ? "neutralize_and_insert" : "direct_replace",
         originalText: item.text,
         replacementText: draft ?? item.text,
+        originalX: item.x,
+        originalY: item.y,
+        originalWidth: item.width,
+        originalHeight: item.height,
         coverX: cover.x,
         coverY: cover.y,
         coverWidth: cover.width,
@@ -134,6 +147,7 @@ export function buildPdfEditorEdits(
     edits.push({
       action: "add",
       pageNumber: Math.max(1, Math.trunc(addition.pageNumber)),
+      saveMode: "add_text",
       replacementText: addition.text,
       x: addition.x,
       y: addition.y,
@@ -151,6 +165,7 @@ export function buildPdfEditorEdits(
     edits.push({
       action: "line",
       pageNumber: original.pageNumber,
+      saveMode: "unsupported",
       coverX: cover.x,
       coverY: cover.y,
       coverWidth: cover.width,
@@ -176,6 +191,7 @@ export function buildPdfEditorEdits(
     edits.push({
       action: "image",
       pageNumber: original.pageNumber,
+      saveMode: "unsupported",
       coverX: original.x,
       coverY: original.y,
       coverWidth: original.width,

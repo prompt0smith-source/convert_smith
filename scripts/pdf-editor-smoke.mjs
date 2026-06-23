@@ -41,6 +41,80 @@ if ((await decodedPageContent(await readFile(directResult.outputPath))).some((co
   throw new Error("Direct text edit created a white rectangle operator.");
 }
 
+const deleteResult = await service.saveTextEdits({
+  sourcePath: inputPath,
+  outputDir: root,
+  outputName: "latin-delete-edited",
+  edits: [makeDeleteEdit(item)]
+});
+const deleteLayer = await service.getTextLayer(deleteResult.outputPath);
+const deleteText = deleteLayer.items.map((entry) => entry.text).join("\n");
+if (deleteText.includes("Convert Smith Source")) {
+  throw new Error("Delete text edit did not remove original text.");
+}
+if ((await decodedPageContent(await readFile(deleteResult.outputPath))).some((content) => hasWhiteRectangle(content))) {
+  throw new Error("Delete text edit created a white rectangle operator.");
+}
+
+const moveResult = await service.saveTextEdits({
+  sourcePath: inputPath,
+  outputDir: root,
+  outputName: "latin-moved-edited",
+  edits: [
+    {
+      ...makeReplaceEdit(item, item.text),
+      saveMode: "neutralize_and_insert",
+      x: item.x + 12,
+      y: item.y + 8
+    }
+  ]
+});
+const moveLayer = await service.getTextLayer(moveResult.outputPath);
+if (!moveLayer.items.map((entry) => entry.text).join("\n").includes("Convert Smith Source")) {
+  throw new Error("Moved text edit did not preserve text.");
+}
+if ((await decodedPageContent(await readFile(moveResult.outputPath))).some((content) => hasWhiteRectangle(content))) {
+  throw new Error("Moved text edit created a white rectangle operator.");
+}
+
+await expectReject(
+  () =>
+    service.saveTextEdits({
+      sourcePath: inputPath,
+      outputDir: root,
+      outputName: "line-edit-should-fail",
+      edits: [
+        {
+          action: "line",
+          pageNumber: 1,
+          saveMode: "unsupported",
+          x: 20,
+          y: 20,
+          width: 100,
+          height: 1,
+          fontSize: 10,
+          x1: 20,
+          y1: 20,
+          x2: 120,
+          y2: 20,
+          strokeWidth: 1
+        }
+      ]
+    }),
+  "이미지/선 객체의 직접 저장 편집은 아직 제한"
+);
+
+await expectReject(
+  () =>
+    service.saveTextEdits({
+      sourcePath: inputPath,
+      outputDir: root,
+      outputName: "ambiguous-without-native-id",
+      edits: [{ ...makeReplaceEdit(item, "Wrong Target"), nativeSpanId: undefined }]
+    }),
+  "안전하게 연결"
+);
+
 const fontProbe = new PdfEditorFontService();
 let fallbackChecked = false;
 try {
@@ -75,8 +149,14 @@ function makeReplaceEdit(item, replacementText) {
     action: "replace",
     pageNumber: item.pageNumber,
     sourceIndex: item.sourceIndex,
+    nativeSpanId: item.nativeSpanId,
+    saveMode: "direct_replace",
     originalText: item.text,
     replacementText,
+    originalX: item.x,
+    originalY: item.y,
+    originalWidth: item.width,
+    originalHeight: item.height,
     x: item.x,
     y: item.y,
     width: item.width,
@@ -87,6 +167,42 @@ function makeReplaceEdit(item, replacementText) {
     fontStyle: item.fontStyle,
     color: item.color
   };
+}
+
+function makeDeleteEdit(item) {
+  return {
+    action: "delete",
+    pageNumber: item.pageNumber,
+    sourceIndex: item.sourceIndex,
+    nativeSpanId: item.nativeSpanId,
+    saveMode: "delete_original",
+    originalText: item.text,
+    replacementText: "",
+    originalX: item.x,
+    originalY: item.y,
+    originalWidth: item.width,
+    originalHeight: item.height,
+    x: item.x,
+    y: item.y,
+    width: item.width,
+    height: item.height,
+    fontSize: item.fontSize,
+    fontFamily: item.fontFamily,
+    fontWeight: item.fontWeight,
+    fontStyle: item.fontStyle,
+    color: item.color
+  };
+}
+
+async function expectReject(task, expectedMessagePart) {
+  try {
+    await task();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes(expectedMessagePart)) return;
+    throw new Error(`Expected rejection containing '${expectedMessagePart}', got: ${message}`);
+  }
+  throw new Error(`Expected operation to fail with '${expectedMessagePart}'.`);
 }
 
 function decodedPageContent(bytes) {

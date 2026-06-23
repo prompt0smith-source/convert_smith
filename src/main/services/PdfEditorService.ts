@@ -2,25 +2,15 @@
 import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
-import { setFillingColor } from "pdf-lib/cjs/api/colors";
-import {
-  beginText,
-  endText,
-  popGraphicsState,
-  pushGraphicsState,
-  rotateAndSkewTextRadiansAndTranslate,
-  setCharacterSqueeze,
-  setFontAndSize,
-  showText
-} from "pdf-lib/cjs/api/operators";
-import type PDFName from "pdf-lib/cjs/core/objects/PDFName";
 import fontkit from "@pdf-lib/fontkit";
 import { createPdfjsDocumentOptions, preparePdfCanvasFonts } from "./PdfjsAssetService.js";
 import { applyLocalFontMatches, warmPdfPageFonts } from "./LocalFontMatchService.js";
 import { extractPdfReadingOrderFragments } from "./PdfReadingOrderService.js";
 import { applyPdfTextColors } from "./PdfTextColorService.js";
 import { extractPdfEditorPageObjects } from "./PdfEditorObjectDetectionService.js";
-import { PdfNativeEditOrchestrator } from "../pdf-native-edit/PdfNativeEditOrchestrator.js";
+import { NativePdfTextEditEngine } from "../pdf-native-edit/NativePdfTextEditEngine.js";
+import { PdfEditVerificationService } from "../pdf-native-edit/PdfEditVerificationService.js";
+import type { PdfNativeTextSpan } from "../pdf-native-edit/PdfTextOperatorScanner.js";
 import { FileSignatureService } from "./FileSignatureService.js";
 import { ValidationService } from "./ValidationService.js";
 import { DependencyService } from "./DependencyService.js";
@@ -44,8 +34,6 @@ const importRuntime = new Function("specifier", "return import(specifier)") as <
   specifier: string
 ) => Promise<T>;
 
-const MIN_TEXT_SQUEEZE_PERCENT = 55;
-const MAX_TEXT_SQUEEZE_PERCENT = 100;
 const TEXT_LAYER_DETAIL_TIMEOUT_MS = 45000;
 const PDF_EDITOR_PAGE_STEP_TIMEOUT_MS = 8000;
 
@@ -54,7 +42,8 @@ export class PdfEditorService {
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly fonts = new PdfEditorFontService();
-  private readonly nativeTextEditor = new PdfNativeEditOrchestrator();
+  private readonly nativeTextEditor = new NativePdfTextEditEngine();
+  private readonly editVerification = new PdfEditVerificationService();
   private readonly previewTempDirs: string[] = [];
 
   async getTextLayer(inputPath: string): Promise<PdfEditorTextLayer> {
@@ -195,6 +184,17 @@ export class PdfEditorService {
       }
     }
 
+    await runBestEffortStep(
+      async () => {
+        const pdfDoc = await PDFDocument.load(await readFile(sourcePath), { ignoreEncryption: false });
+        const nativeSpans = this.nativeTextEditor.scanTextSpans(pdfDoc);
+        attachNativeSpanMetadata(items, nativeSpans, warnings);
+      },
+      PDF_EDITOR_PAGE_STEP_TIMEOUT_MS,
+      warnings,
+      "PDF 내부 텍스트 명령 매칭을 건너뛰었습니다."
+    );
+
     return {
       path: sourcePath,
       name: path.basename(sourcePath),
@@ -230,145 +230,35 @@ export class PdfEditorService {
     let editedCount = 0;
     let deletedCount = 0;
     let addedCount = 0;
-    let lineEditedCount = 0;
-    let imageEditedCount = 0;
     const warnings = [
       "텍스트 수정/삭제는 원본 PDF content stream의 텍스트 명령을 우선 직접 수정합니다. 원본 글꼴로 새 문자를 표현할 수 없을 때만 원본 텍스트 명령을 비우고 로컬 글꼴을 임베드한 실제 PDF 텍스트 객체를 같은 위치에 삽입합니다. 흰 배경 덮어쓰기 방식은 사용하지 않습니다."
     ];
 
-    const directTextEdits = edits.filter((edit) => edit.action === "replace" || edit.action === "delete");
-    if (directTextEdits.length > 0) {
-      const nativeResult = this.nativeTextEditor.applyTextEdits(pdfDoc, directTextEdits);
-      editedCount += nativeResult.replacedCount;
-      deletedCount += nativeResult.deletedCount;
-      warnings.push(...nativeResult.warnings);
+    const nativeResult = this.nativeTextEditor.applyTextEdits(pdfDoc, edits);
+    editedCount += nativeResult.replacedCount + nativeResult.neutralizedCount;
+    deletedCount += nativeResult.deletedCount;
+    addedCount += nativeResult.addedCount;
+    warnings.push(...nativeResult.warnings);
 
-      for (const insertion of nativeResult.replacementFontInsertions) {
-        await this.insertReplacementFontText(pdfDoc, insertion.edit);
-        editedCount += 1;
-      }
-    }
-
-    for (const edit of edits.filter((item) => item.action !== "replace" && item.action !== "delete")) {
-      const page = pdfDoc.getPage(edit.pageNumber - 1);
-      const pageHeight = page.getHeight();
-      const x = clamp(edit.x, 0, page.getWidth());
-      const yTop = clamp(edit.y, 0, pageHeight);
-      const width = clamp(edit.width, 1, page.getWidth());
-      const minimumHeight = edit.action === "image" || edit.action === "line"
-        ? 1
-        : Math.max(6, edit.fontSize * 0.9);
-      const height = clamp(edit.height, minimumHeight, pageHeight);
-      const pdfY = clamp(pageHeight - yTop - height, 0, pageHeight);
-      const minimumCoverHeight = edit.coverHeight === undefined && edit.action !== "line"
-        ? Math.max(6, edit.fontSize * 0.9)
-        : 0.4;
-      const coverX = clamp(edit.coverX ?? edit.x, 0, page.getWidth());
-      const coverYTop = clamp(edit.coverY ?? edit.y, 0, pageHeight);
-      const coverWidth = clamp(edit.coverWidth ?? edit.width, 1, page.getWidth());
-      const coverHeight = clamp(edit.coverHeight ?? edit.height, minimumCoverHeight, pageHeight);
-      const coverPdfY = clamp(pageHeight - coverYTop - coverHeight, 0, pageHeight);
-      const fontSize = clamp(edit.fontSize || 10, 5, 96);
-      const replacement = (edit.replacementText || "").normalize("NFC");
-
-      if (edit.action === "image") {
-        if (!edit.imageDataBase64) {
-          throw new Error("이동할 이미지 데이터를 찾지 못해 PDF 저장을 중단했습니다.");
-        }
-
-        page.drawRectangle({
-          x: coverX,
-          y: coverPdfY,
-          width: Math.min(page.getWidth() - coverX, coverWidth),
-          height: Math.min(pageHeight - coverPdfY, coverHeight),
-          color: rgb(1, 1, 1)
-        });
-
-        const imageBytes = Buffer.from(edit.imageDataBase64, "base64");
-        const embeddedImage = await pdfDoc.embedPng(imageBytes);
-        page.drawImage(embeddedImage, {
-          x,
-          y: pdfY,
-          width: Math.min(page.getWidth() - x, width),
-          height: Math.min(pageHeight - pdfY, height)
-        });
-        imageEditedCount += 1;
-        continue;
-      }
-
-      if (edit.action === "line") {
-        page.drawRectangle({
-          x: coverX,
-          y: coverPdfY,
-          width: Math.min(page.getWidth() - coverX, coverWidth),
-          height: Math.min(pageHeight - coverPdfY, coverHeight),
-          color: rgb(1, 1, 1)
-        });
-        page.drawLine({
-          start: {
-            x: clamp(edit.x1 ?? edit.x, 0, page.getWidth()),
-            y: clamp(pageHeight - (edit.y1 ?? edit.y), 0, pageHeight)
-          },
-          end: {
-            x: clamp(edit.x2 ?? edit.x + edit.width, 0, page.getWidth()),
-            y: clamp(pageHeight - (edit.y2 ?? edit.y + edit.height), 0, pageHeight)
-          },
-          thickness: clamp(edit.strokeWidth ?? 1, 0.2, 24),
-          color: rgb(0, 0, 0),
-          dashArray: edit.dashArray?.length ? edit.dashArray.map((value) => clamp(value, 0.1, 200)) : undefined,
-          dashPhase: edit.dashPhase === undefined ? undefined : clamp(edit.dashPhase, 0, 200)
-        });
-        lineEditedCount += 1;
-        continue;
-      }
-
-      if (edit.action !== "delete" && replacement.trim()) {
-        const fontChoice = await this.fonts.resolveFont(pdfDoc, replacement, edit.fontFamily, edit.fontWeight, edit.fontStyle);
-
-        if (edit.action === "replace") {
-          this.assertSafeReplacement(edit, replacement, fontChoice.embedded, fontChoice.font, width, height, fontSize);
-        } else if (!fontChoice.embedded && containsNonWinAnsi(replacement)) {
-          throw new Error(
-            "로컬 서체를 찾지 못해 PDF 저장을 중단했습니다. 글꼴이 바뀐 결과를 만들지 않기 위해 원본 파일은 변경하지 않았습니다."
-          );
-        }
-
-        const lines =
-          edit.action === "replace"
-            ? [replacement]
-            : wrapPdfEditorText(fontChoice.font, replacement, Math.max(1, width), fontSize);
-        const lineHeight = fontSize * 1.18;
-        const color = parsePdfEditorRgb(edit.color);
-
-        lines.forEach((line, index) => {
-          const baselineY =
-            edit.action === "replace"
-              ? pdfY - index * lineHeight
-              : pdfY + height - fontSize - index * lineHeight;
-          drawFittedEditorTextLine({
-            page,
-            font: fontChoice.font,
-            text: line,
-            x,
-            y: clamp(baselineY, 0, pageHeight),
-            fontSize,
-            maxWidth: Math.max(1, width),
-            color
-          });
-        });
-      }
-
-      if (edit.action === "add") addedCount += 1;
+    for (const insertion of nativeResult.insertions) {
+      await this.insertReplacementFontText(pdfDoc, insertion.edit);
+      if (insertion.mode === "neutralize_and_insert") editedCount += 1;
     }
 
     await writeFile(outputPath, await pdfDoc.save({ useObjectStreams: false }));
     if (!(await this.signatures.isPdf(outputPath))) {
       throw new Error("PDF 편집 결과 검증에 실패했습니다. 결과 파일이 정상 PDF가 아닙니다.");
     }
+    const verification = await this.editVerification.verifyNativeTextEdit(sourcePath, outputPath, edits);
+    warnings.push(...verification.warnings);
+    if (!verification.ok) {
+      await rm(outputPath, { force: true }).catch(() => undefined);
+      throw new Error(verification.message || "PDF 편집 결과 검증에 실패했습니다.");
+    }
 
     return {
       outputPath,
-      editedCount: editedCount + lineEditedCount + imageEditedCount,
+      editedCount,
       deletedCount,
       addedCount,
       warnings: Array.from(new Set(warnings))
@@ -420,7 +310,8 @@ export class PdfEditorService {
       pageNumber: safePageNumber,
       pageCount: document.numPages,
       scale: safeScale,
-      dataUrl: `data:image/png;base64,${pngBuffer.toString("base64")}`
+      dataUrl: `data:image/png;base64,${pngBuffer.toString("base64")}`,
+      renderer: "pdfjs"
     };
   }
 
@@ -442,8 +333,14 @@ export class PdfEditorService {
           ...edit,
           pageNumber,
           sourceIndex: edit.sourceIndex === undefined ? undefined : Math.trunc(finiteNumber(edit.sourceIndex, 0)),
+          nativeSpanId: typeof edit.nativeSpanId === "string" ? edit.nativeSpanId.slice(0, 120) : undefined,
+          saveMode: typeof edit.saveMode === "string" ? edit.saveMode : undefined,
           originalText: String(edit.originalText || "").slice(0, 5000),
           replacementText: String(edit.replacementText || "").slice(0, 5000),
+          originalX: edit.originalX === undefined ? undefined : finiteNumber(edit.originalX, 0),
+          originalY: edit.originalY === undefined ? undefined : finiteNumber(edit.originalY, 0),
+          originalWidth: edit.originalWidth === undefined ? undefined : finiteNumber(edit.originalWidth, 1),
+          originalHeight: edit.originalHeight === undefined ? undefined : finiteNumber(edit.originalHeight, 12),
           coverX: edit.coverX === undefined ? undefined : finiteNumber(edit.coverX, 0),
           coverY: edit.coverY === undefined ? undefined : finiteNumber(edit.coverY, 0),
           coverWidth: edit.coverWidth === undefined ? undefined : finiteNumber(edit.coverWidth, 1),
@@ -498,14 +395,27 @@ export class PdfEditorService {
       edit.fontStyle
     );
     const color = parsePdfEditorRgb(edit.color);
-    drawFittedEditorTextLine({
+    const baselineY = edit.saveMode === "add_text" || edit.action === "add"
+      ? pdfY + height - fontSize
+      : pdfY;
+
+    this.assertSafeReplacement(
+      edit,
+      replacement,
+      fontChoice.embedded,
+      fontChoice.font,
+      width,
+      height,
+      fontSize
+    );
+
+    drawEditorTextLine({
       page,
       font: fontChoice.font,
       text: replacement,
       x,
-      y: pdfY,
+      y: clamp(baselineY, 0, pageHeight),
       fontSize,
-      maxWidth: Math.max(1, width),
       color
     });
   }
@@ -532,10 +442,9 @@ export class PdfEditorService {
     }
 
     const measuredWidth = font.widthOfTextAtSize(replacement, fontSize);
-    const squeeze = calculateTextSqueezePercent(measuredWidth, width);
-    if (measuredWidth * (squeeze / 100) > width * 1.04) {
+    if (edit.action !== "add" && measuredWidth > width * 1.04) {
       throw new Error(
-        "수정한 텍스트가 원본 텍스트 영역보다 길어 글자 간격이나 형태가 틀어질 수 있습니다. 저장을 중단했고 원본 파일은 변경하지 않았습니다."
+        "수정한 텍스트가 원본 텍스트 영역보다 길어 글씨체나 자간이 변형될 수 있습니다. 강제로 압축하지 않고 저장을 중단했습니다."
       );
     }
 
@@ -588,14 +497,13 @@ export class PdfEditorService {
   }
 }
 
-function drawFittedEditorTextLine({
+function drawEditorTextLine({
   page,
   font,
   text,
   x,
   y,
   fontSize,
-  maxWidth,
   color
 }: {
   page: any;
@@ -604,48 +512,9 @@ function drawFittedEditorTextLine({
   x: number;
   y: number;
   fontSize: number;
-  maxWidth: number;
   color: ReturnType<typeof rgb>;
 }): void {
-  const measuredWidth = font.widthOfTextAtSize(text, fontSize);
-  const squeeze = calculateTextSqueezePercent(measuredWidth, maxWidth);
-  if (Math.abs(squeeze - 100) < 0.5) {
-    page.drawText(text, { x, y, size: fontSize, font, color });
-    return;
-  }
-
-  const pageRuntime = page as {
-    setOrEmbedFont: (font: PDFFont) => { oldFont?: PDFFont; newFontKey: PDFName };
-    getContentStream: () => { push: (...operators: unknown[]) => void };
-    setFont: (font: PDFFont) => void;
-    resetFont: () => void;
-  };
-  const fontState = pageRuntime.setOrEmbedFont(font);
-  pageRuntime.getContentStream().push(
-    pushGraphicsState(),
-    beginText(),
-    setFillingColor(color),
-    setFontAndSize(fontState.newFontKey, fontSize),
-    setCharacterSqueeze(squeeze),
-    rotateAndSkewTextRadiansAndTranslate(0, 0, 0, x, y),
-    showText(font.encodeText(text)),
-    setCharacterSqueeze(100),
-    endText(),
-    popGraphicsState()
-  );
-
-  if (fontState.oldFont) {
-    pageRuntime.setFont(fontState.oldFont);
-  } else {
-    pageRuntime.resetFont();
-  }
-}
-
-function calculateTextSqueezePercent(measuredWidth: number, targetWidth: number): number {
-  if (!Number.isFinite(measuredWidth) || measuredWidth <= 0 || !Number.isFinite(targetWidth) || targetWidth <= 0) {
-    return 100;
-  }
-  return clamp((targetWidth / measuredWidth) * 100, MIN_TEXT_SQUEEZE_PERCENT, MAX_TEXT_SQUEEZE_PERCENT);
+  page.drawText(text, { x, y, size: fontSize, font, color });
 }
 
 function sanitizeBaseName(baseName: string): string {
@@ -688,6 +557,69 @@ function upsertPageSize(pageSizes: PdfEditorPageSize[], nextPageSize: PdfEditorP
   }
   pageSizes.push(nextPageSize);
   pageSizes.sort((a, b) => a.pageNumber - b.pageNumber);
+}
+
+function attachNativeSpanMetadata(
+  items: PdfEditorTextItem[],
+  spans: PdfNativeTextSpan[],
+  warnings: string[]
+): void {
+  const usedSpanIds = new Set<string>();
+  const spansByPageAndText = new Map<string, PdfNativeTextSpan[]>();
+  for (const span of spans) {
+    const key = createNativeMatchKey(span.pageNumber, span.normalizedText);
+    const bucket = spansByPageAndText.get(key) || [];
+    bucket.push(span);
+    spansByPageAndText.set(key, bucket);
+  }
+
+  let mappedCount = 0;
+  for (const item of items) {
+    const normalizedText = normalizeNativeMatchText(item.text);
+    const candidates = (spansByPageAndText.get(createNativeMatchKey(item.pageNumber, normalizedText)) || [])
+      .filter((span) => !usedSpanIds.has(span.id));
+
+    const match = chooseNativeSpanMatch(candidates, item.sourceIndex);
+    if (!match) {
+      item.editCapability = candidates.length > 1 ? "not_editable" : "not_editable";
+      item.editCapabilityReason = candidates.length > 1 ? "ambiguous_text_span" : "text_span_not_found";
+      continue;
+    }
+
+    usedSpanIds.add(match.id);
+    mappedCount += 1;
+    item.nativeSpanId = match.id;
+    item.editCapability = match.encoding === "simple_ansi" ? "direct" : "neutralize_and_insert";
+    item.editCapabilityReason = match.encoding === "simple_ansi" ? undefined : "to_unicode_cmap_may_need_insert";
+    item.nativeFontResourceName = match.fontResourceName;
+    item.nativeTextEncoding = match.encoding;
+  }
+
+  if (items.length > 0 && mappedCount === 0) {
+    warnings.push("PDF 내부 텍스트 명령과 UI 텍스트를 안전하게 매칭하지 못했습니다. 일부 항목은 보기 전용으로 동작할 수 있습니다.");
+  }
+}
+
+function chooseNativeSpanMatch(candidates: PdfNativeTextSpan[], sourceIndex: number | undefined): PdfNativeTextSpan | undefined {
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0];
+  if (sourceIndex === undefined) return undefined;
+
+  const ranked = [...candidates]
+    .map((span) => ({ span, distance: Math.abs(span.order - sourceIndex) }))
+    .sort((a, b) => a.distance - b.distance);
+  if (ranked.length < 2) return ranked[0]?.span;
+  if (ranked[0].distance === ranked[1].distance) return undefined;
+  if (ranked[0].distance > 4) return undefined;
+  return ranked[0].span;
+}
+
+function createNativeMatchKey(pageNumber: number, text: string): string {
+  return `${pageNumber}:${normalizeNativeMatchText(text)}`;
+}
+
+function normalizeNativeMatchText(text: string): string {
+  return text.replace(/\u0000/g, "").replace(/\s+/g, " ").trim().normalize("NFC");
 }
 
 async function runBestEffortStep(

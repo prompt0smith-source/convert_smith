@@ -1,68 +1,45 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
-import { createPdfjsDocumentOptions } from "../services/PdfjsAssetService.js";
-import type { PdfEditVerificationRequest, PdfEditVerificationResult } from "./types.js";
+import type { PdfEditorEdit } from "../types/conversion.js";
+import { readPdfDocumentContentStreams } from "./PdfContentStreamParser.js";
+import { PdfEditVisualDiffService } from "./PdfEditVisualDiffService.js";
 
-const importRuntime = new Function("specifier", "return import(specifier)") as <T = any>(
-  specifier: string
-) => Promise<T>;
+export interface PdfEditVerificationResult {
+  ok: boolean;
+  warnings: string[];
+  message?: string;
+}
 
 export class PdfEditVerificationService {
-  async verify(request: PdfEditVerificationRequest): Promise<PdfEditVerificationResult> {
-    try {
-      const info = await stat(request.outputPath);
-      if (!info.isFile() || info.size <= 0) {
-        return { ok: false, message: "PDF 편집 결과 파일이 없거나 비어 있습니다." };
-      }
+  private readonly visualDiff = new PdfEditVisualDiffService();
 
-      const data = await readFile(request.outputPath);
-      if (Buffer.from(data.subarray(0, 5)).toString("latin1") !== "%PDF-") {
-        return { ok: false, message: "PDF 편집 결과의 헤더가 올바르지 않습니다." };
-      }
+  async verifyNativeTextEdit(sourcePath: string, outputPath: string, edits: PdfEditorEdit[]): Promise<PdfEditVerificationResult> {
+    const warnings: string[] = [];
+    const outputBytes = await readFile(outputPath);
+    if (!outputBytes.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+      return { ok: false, warnings, message: "PDF 편집 결과 검증에 실패했습니다. 결과 파일이 정상 PDF가 아닙니다." };
+    }
 
-      await PDFDocument.load(data, { ignoreEncryption: false });
-
-      const expected = (request.expectedReplacementTexts || [])
-        .map((text) => text.normalize("NFC").trim())
-        .filter(Boolean);
-      if (expected.length > 0) {
-        const extractedText = await this.extractText(data);
-        const normalizedExtracted = extractedText.normalize("NFC");
-        const missing = expected.find((text) => !normalizedExtracted.includes(text));
-        if (missing) {
-          return {
-            ok: false,
-            message: "PDF 직접 편집 검증에 실패했습니다. 저장된 PDF에서 새 텍스트를 확인하지 못했습니다.",
-            details: `Missing replacement text: ${missing}`
-          };
-        }
-      }
-
-      return { ok: true, message: "PDF 편집 결과를 검증했습니다." };
-    } catch (error) {
+    const pdfDoc = await PDFDocument.load(outputBytes, { ignoreEncryption: false });
+    const contentStreams = readPdfDocumentContentStreams(pdfDoc).map((state) => state.content);
+    if (contentStreams.some(hasSuspiciousWhiteRectangleCoverUp)) {
       return {
         ok: false,
-        message: "PDF 편집 결과 검증 중 오류가 발생했습니다.",
-        details: error instanceof Error ? error.message : String(error)
+        warnings,
+        message: "PDF 편집 결과에서 시각적으로 덮어쓰기 의심 명령이 발견되어 저장을 중단했습니다."
       };
     }
-  }
 
-  private async extractText(data: Uint8Array): Promise<string> {
-    const pdfjs = await importRuntime("pdfjs-dist/legacy/build/pdf.mjs");
-    const document = await pdfjs.getDocument(createPdfjsDocumentOptions(new Uint8Array(data))).promise;
-    const pageTexts: string[] = [];
-
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      const page = await document.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      pageTexts.push(
-        textContent.items
-          .map((item: { str?: string }) => item.str || "")
-          .join(" ")
-      );
+    const visual = await this.visualDiff.compareEditedPages(sourcePath, outputPath, edits);
+    warnings.push(`시각 검증: ${visual.message}`);
+    if (!visual.ok) {
+      return { ok: false, warnings, message: visual.message };
     }
 
-    return pageTexts.join("\n");
+    return { ok: true, warnings };
   }
+}
+
+function hasSuspiciousWhiteRectangleCoverUp(content: string): boolean {
+  return /(?:^|\s)(?:1(?:\.0+)?\s+){3}rg[\s\S]{0,180}\bre\b[\s\S]{0,80}\bf\b/.test(content);
 }

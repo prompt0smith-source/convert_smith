@@ -337,9 +337,20 @@ body.convert-smith-grabbing * {
     0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
-.pdf-editor-field--deleted {
-  border-color: rgba(225, 29, 72, 0.7);
-  background: transparent;
+.pdf-editor-field--deleted,
+.pdf-editor-field--deleted::before,
+.pdf-editor-field--deleted-unused::after {
+  display: none;
+}
+
+.pdf-editor-field--deleted-unused {
+  z-index: 7;
+  border-color: rgba(225, 29, 72, 0.88);
+  border-style: dashed;
+  background: rgba(255, 241, 242, 0.16);
+  box-shadow:
+    0 0 0 2px rgba(225, 29, 72, 0.16),
+    0 10px 24px rgba(225, 29, 72, 0.1);
 }
 
 .pdf-editor-field--deleted::after {
@@ -348,7 +359,25 @@ body.convert-smith-grabbing * {
   left: 3px;
   right: 3px;
   top: 50%;
-  border-top: 1px dashed rgba(225, 29, 72, 0.78);
+  border-top: 2px solid rgba(225, 29, 72, 0.9);
+  pointer-events: none;
+}
+
+.pdf-editor-field--deleted-unused::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: calc(100% + 3px);
+  z-index: 2;
+  border-radius: 3px;
+  background: #fff1f2;
+  border: 1px solid rgba(225, 29, 72, 0.24);
+  padding: 1px 5px;
+  color: #be123c;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
   pointer-events: none;
 }
 
@@ -363,36 +392,6 @@ body.convert-smith-grabbing * {
   background: transparent;
 }
 
-.pdf-editor-cover {
-  position: absolute;
-  z-index: 2;
-  pointer-events: none;
-  background: transparent;
-}
-
-.pdf-editor-cover--line {
-  z-index: 2;
-}
-
-.pdf-editor-cover--image {
-  z-index: 2;
-}
-
-.pdf-editor-line-preview {
-  position: absolute;
-  z-index: 3;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.pdf-editor-image-preview {
-  position: absolute;
-  z-index: 3;
-  object-fit: fill;
-  pointer-events: none;
-  user-select: none;
-}
-
 .pdf-native-page-frame {
   position: absolute;
   inset: 0;
@@ -402,38 +401,6 @@ body.convert-smith-grabbing * {
   border: 0;
   background: #fff;
   pointer-events: none;
-}
-
-.pdf-rendered-page-image {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
-  user-select: none;
-  pointer-events: none;
-  background: #fff;
-}
-
-.pdf-editor-clone-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  overflow: hidden;
-  background: #fff;
-  pointer-events: none;
-}
-
-.pdf-editor-clone-text {
-  position: absolute;
-  z-index: 4;
-  display: inline-block;
-  overflow: hidden;
-  direction: ltr;
-  text-align: left;
-  unicode-bidi: plaintext;
-  user-select: none;
 }
 
 .pdf-editor-page-surface {
@@ -496,7 +463,11 @@ body.convert-smith-grabbing * {
 .pdf-editor-object-box--image {
   border-color: rgba(124, 58, 237, 0.46);
   color: #5b21b6;
-  cursor: move;
+  cursor: grab;
+}
+
+.pdf-editor-object-box--image:active {
+  cursor: grabbing;
 }
 
 .pdf-editor-object-box--image:hover,
@@ -513,7 +484,7 @@ body.convert-smith-grabbing * {
   background: transparent;
   color: #92400e;
   opacity: 1;
-  cursor: move;
+  cursor: pointer;
 }
 
 .pdf-editor-object-box--line:hover,
@@ -549,15 +520,19 @@ body.convert-smith-grabbing * {
 }
 
 .pdf-editor-object-box--table {
-  border-color: rgba(2, 132, 199, 0.42);
+  pointer-events: none;
+  border-color: rgba(2, 132, 199, 0.34);
   color: #075985;
+  opacity: 0.44;
+  background: transparent;
+  box-shadow: none;
 }
 
 .pdf-editor-object-box--table:hover,
 .pdf-editor-object-box--table.pdf-editor-object-box--selected {
-  border-color: rgba(2, 132, 199, 0.92);
-  background: rgba(224, 242, 254, 0.12);
-  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.14);
+  border-color: rgba(2, 132, 199, 0.5);
+  background: transparent;
+  box-shadow: none;
 }
 
 .pdf-editor-field-text {

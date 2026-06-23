@@ -58,6 +58,10 @@ const CANDIDATE_NOT_FOUND_MESSAGE = [
   "기존 텍스트를 흰 박스로 덮어쓰는 방식은 사용하지 않았고, 원본 파일은 변경하지 않았습니다."
 ].join("\n");
 
+/**
+ * @deprecated Legacy direct patcher retained for reference only.
+ * NativePdfTextEditEngine is the primary PDF text save path.
+ */
 export class PdfDirectTextEditService {
   apply(pdfDoc: PDFDocument, edits: PdfEditorEdit[]): DirectTextEditResult {
     const textEdits = edits.filter((edit) => edit.action === "replace" || edit.action === "delete");

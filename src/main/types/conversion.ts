@@ -153,6 +153,14 @@ export interface PdfToolJob {
 }
 
 export type PdfEditorEditAction = "replace" | "delete" | "add" | "line" | "image";
+export type PdfEditorTextEditCapability = "direct" | "neutralize_and_insert" | "add_only" | "not_editable";
+export type PdfEditorNativeTextEncoding = "simple_ansi" | "to_unicode_cmap";
+export type PdfEditorSaveMode =
+  | "direct_replace"
+  | "delete_original"
+  | "neutralize_and_insert"
+  | "add_text"
+  | "unsupported";
 
 export interface PdfEditorTextItem {
   id: string;
@@ -168,6 +176,15 @@ export interface PdfEditorTextItem {
   fontWeight?: string;
   fontStyle?: string;
   color?: string;
+  nativeSpanId?: string;
+  editCapability?: PdfEditorTextEditCapability;
+  editCapabilityReason?: string;
+  nativeFontResourceName?: string;
+  nativeTextEncoding?: PdfEditorNativeTextEncoding;
+  nativeEstimatedX?: number;
+  nativeEstimatedY?: number;
+  nativeEstimatedWidth?: number;
+  nativeEstimatedHeight?: number;
 }
 
 export interface PdfEditorPageSize {
@@ -234,6 +251,7 @@ export interface PdfEditorPagePreview {
   pageCount: number;
   scale: 1 | 2 | 3;
   dataUrl: string;
+  renderer?: "pdfium" | "pdfjs";
   warning?: string;
 }
 
@@ -241,8 +259,14 @@ export interface PdfEditorEdit {
   action: PdfEditorEditAction;
   pageNumber: number;
   sourceIndex?: number;
+  nativeSpanId?: string;
+  saveMode?: PdfEditorSaveMode;
   originalText?: string;
   replacementText?: string;
+  originalX?: number;
+  originalY?: number;
+  originalWidth?: number;
+  originalHeight?: number;
   coverX?: number;
   coverY?: number;
   coverWidth?: number;
