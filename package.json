@@ -15,7 +15,9 @@
     "electron:dev": "concurrently -k \"npm run renderer:dev\" \"wait-on tcp:5173 && tsc -p tsconfig.electron.json --watch\" \"wait-on tcp:5173 file:dist-electron/main/main.js && node scripts/copy-preload-cjs.mjs && node scripts/start-electron-dev.mjs\"",
     "electron:build": "node scripts/package-electron.mjs",
     "dist": "node scripts/package-electron.mjs",
-    "smoke": "node scripts/smoke-test.mjs"
+    "smoke": "node scripts/smoke-test.mjs",
+    "smoke:pdf-editor": "node scripts/pdf-editor-smoke.mjs",
+    "test:pdf-editor": "node scripts/pdf-editor-smoke.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.80",

@@ -1,14 +1,17 @@
 ﻿import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { StandardFonts, rgb, type PDFDocument, type PDFFont } from "pdf-lib";
+import { FontInventoryService } from "./FontInventoryService.js";
 
 export interface PdfEditorFontChoice {
   font: PDFFont;
   embedded: boolean;
+  fontPath?: string;
 }
 
 export class PdfEditorFontService {
   private readonly fontCache = new Map<string, PDFFont>();
+  private readonly inventory = new FontInventoryService();
   private standardFont?: PDFFont;
 
   reset(): void {
@@ -23,19 +26,80 @@ export class PdfEditorFontService {
     preferredWeight?: string,
     preferredStyle?: string
   ): Promise<PdfEditorFontChoice> {
-    const customFontPath = await findLocalFontFile(preferredFamily, text, preferredWeight, preferredStyle);
+    const customFontPath = await this.findLocalFontFile(preferredFamily, text, preferredWeight, preferredStyle);
     if (customFontPath) {
       const cached = this.fontCache.get(customFontPath);
-      if (cached) return { font: cached, embedded: true };
+      if (cached) {
+        assertPdfEditorFontSupportsText(cached, text);
+        return { font: cached, embedded: true, fontPath: customFontPath };
+      }
       const font = await pdfDoc.embedFont(await readFile(customFontPath), { subset: true });
+      assertPdfEditorFontSupportsText(font, text);
       this.fontCache.set(customFontPath, font);
-      return { font, embedded: true };
+      return { font, embedded: true, fontPath: customFontPath };
     }
 
     if (!this.standardFont) {
       this.standardFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
     }
     return { font: this.standardFont, embedded: false };
+  }
+
+  async resolveEmbeddedFont(
+    pdfDoc: PDFDocument,
+    text: string,
+    preferredFamily?: string,
+    preferredWeight?: string,
+    preferredStyle?: string
+  ): Promise<PdfEditorFontChoice> {
+    const customFontPath = await this.findLocalFontFile(preferredFamily, text, preferredWeight, preferredStyle);
+    if (!customFontPath) {
+      throw new Error(
+        "이 문자를 저장할 수 있는 로컬 글꼴을 찾지 못했습니다. 흰 박스 덮어쓰기 방식으로 저장하지 않기 위해 작업을 중단했습니다."
+      );
+    }
+
+    const cached = this.fontCache.get(customFontPath);
+    if (cached) {
+      assertPdfEditorFontSupportsText(cached, text);
+      return { font: cached, embedded: true, fontPath: customFontPath };
+    }
+
+    const font = await pdfDoc.embedFont(await readFile(customFontPath), { subset: true });
+    assertPdfEditorFontSupportsText(font, text);
+    this.fontCache.set(customFontPath, font);
+    return { font, embedded: true, fontPath: customFontPath };
+  }
+
+  private async findLocalFontFile(
+    preferredFamily: string | undefined,
+    text: string,
+    preferredWeight?: string,
+    preferredStyle?: string
+  ): Promise<string | undefined> {
+    return (
+      await this.inventory.findFontFileForText({
+        preferredFamily,
+        text,
+        preferredWeight,
+        preferredStyle
+      })
+    ) || findLocalFontFile(preferredFamily, text, preferredWeight, preferredStyle);
+  }
+}
+
+export function assertPdfEditorFontSupportsText(font: PDFFont, text: string): void {
+  try {
+    font.encodeText(text);
+    font.widthOfTextAtSize(text, 10);
+  } catch (error) {
+    throw new Error(
+      [
+        "선택한 글꼴이 수정한 텍스트의 모든 문자를 표현하지 못합니다.",
+        "깨진 사각형 글자(tofu)를 만들지 않기 위해 저장을 중단했습니다.",
+        error instanceof Error ? `상세: ${error.message}` : undefined
+      ].filter(Boolean).join("\n")
+    );
   }
 }
 

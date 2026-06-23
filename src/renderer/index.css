@@ -339,7 +339,17 @@ body.convert-smith-grabbing * {
 
 .pdf-editor-field--deleted {
   border-color: rgba(225, 29, 72, 0.7);
-  background: rgba(255, 228, 230, 0.32);
+  background: transparent;
+}
+
+.pdf-editor-field--deleted::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  border-top: 1px dashed rgba(225, 29, 72, 0.78);
+  pointer-events: none;
 }
 
 .pdf-editor-field--addition {
@@ -357,7 +367,7 @@ body.convert-smith-grabbing * {
   position: absolute;
   z-index: 2;
   pointer-events: none;
-  background: #fff;
+  background: transparent;
 }
 
 .pdf-editor-cover--line {

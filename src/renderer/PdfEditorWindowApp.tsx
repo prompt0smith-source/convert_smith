@@ -183,12 +183,6 @@ export function PdfEditorWindowApp(): JSX.Element {
     [layer?.tables, selectedPage]
   );
   const currentPageAdditions = additions.filter((item) => item.pageNumber === selectedPage);
-  const coveredItems = currentPageItems.filter(
-    (item) =>
-      deletedIds.has(item.id) ||
-      drafts[item.id] !== undefined ||
-      geometryOverrides[item.id]
-  );
   const changedCount = useMemo(
     () => countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides, lineGeometryOverrides, imageGeometryOverrides),
     [additions, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, layer?.items, lineGeometryOverrides]
@@ -727,15 +721,6 @@ export function PdfEditorWindowApp(): JSX.Element {
                     />
                   ))}
 
-                  {currentPageItems.map((item) => (
-                    <CoverOverlayBox
-                      key={`cover-${item.id}`}
-                      item={item}
-                      zoom={zoom}
-                      visible={coveredItems.includes(item)}
-                    />
-                  ))}
-
                   {currentPageLines.filter((line) => lineGeometryOverrides[line.id]).map((line) => (
                     <LineCoverOverlayBox
                       key={`line-cover-${line.id}`}
@@ -753,7 +738,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                   ))}
 
 
-                  {currentPageItems.filter((item) => !deletedIds.has(item.id)).map((item) => (
+                  {currentPageItems.map((item) => (
                     <TextOverlayBox
                       key={item.id}
                       item={item}
@@ -1116,16 +1101,6 @@ function TextOverlayBox({
         <span className="pdf-editor-field-label">{deleted ? "삭제 예정" : ""}</span>
       )}
     </div>
-  );
-}
-
-function CoverOverlayBox({ item, zoom, visible }: { item: PdfEditorTextItem; zoom: number; visible: boolean }): JSX.Element | null {
-  if (!visible) return null;
-  return (
-    <div
-      className="pdf-editor-cover pdf-editor-cover--text"
-      style={boxStyleExact(createTextCoverGeometry(item), zoom)}
-    />
   );
 }
 
@@ -1650,18 +1625,6 @@ function normalizeLineGeometry(line: PdfEditorGraphicLineItem): PdfEditorGraphic
         : rawWidth <= Math.max(1.5, rawHeight * 0.08)
           ? "vertical"
           : "diagonal"
-  };
-}
-
-function createTextCoverGeometry(item: PdfEditorTextItem): PdfEditorBoxGeometry {
-  const padX = Math.max(0.8, item.fontSize * 0.08);
-  const padY = Math.max(0.4, item.fontSize * 0.06);
-  const coverHeight = Math.max(item.height, item.fontSize * 1.04, 1);
-  return {
-    x: Math.max(0, item.x - padX),
-    y: Math.max(0, item.y - padY),
-    width: item.width + padX * 2,
-    height: coverHeight + padY * 2
   };
 }
 

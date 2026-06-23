@@ -19,7 +19,7 @@ import { applyLocalFontMatches, warmPdfPageFonts } from "./LocalFontMatchService
 import { extractPdfReadingOrderFragments } from "./PdfReadingOrderService.js";
 import { applyPdfTextColors } from "./PdfTextColorService.js";
 import { extractPdfEditorPageObjects } from "./PdfEditorObjectDetectionService.js";
-import { PdfDirectTextEditService } from "./PdfDirectTextEditService.js";
+import { PdfNativeEditOrchestrator } from "../pdf-native-edit/PdfNativeEditOrchestrator.js";
 import { FileSignatureService } from "./FileSignatureService.js";
 import { ValidationService } from "./ValidationService.js";
 import { DependencyService } from "./DependencyService.js";
@@ -52,7 +52,7 @@ export class PdfEditorService {
   private readonly signatures = new FileSignatureService();
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly fonts = new PdfEditorFontService();
-  private readonly directTextEditor = new PdfDirectTextEditService();
+  private readonly nativeTextEditor = new PdfNativeEditOrchestrator();
 
   async getTextLayer(inputPath: string): Promise<PdfEditorTextLayer> {
     const sourcePath = await this.validatePdfInput(inputPath);
@@ -230,18 +230,19 @@ export class PdfEditorService {
     let lineEditedCount = 0;
     let imageEditedCount = 0;
     const warnings = [
-      "텍스트 수정/삭제는 원본 PDF content stream의 텍스트 명령과 원본 font resource를 직접 수정합니다. 직접 매칭되지 않거나 원본 글꼴에 없는 문자는 흰 배경 덮어쓰기/대체 글꼴 방식으로 저장하지 않고 중단합니다."
+      "텍스트 수정/삭제는 원본 PDF content stream의 텍스트 명령을 우선 직접 수정합니다. 원본 글꼴로 새 문자를 표현할 수 없을 때만 원본 텍스트 명령을 비우고 로컬 글꼴을 임베드한 실제 PDF 텍스트 객체를 같은 위치에 삽입합니다. 흰 배경 덮어쓰기 방식은 사용하지 않습니다."
     ];
 
     const directTextEdits = edits.filter((edit) => edit.action === "replace" || edit.action === "delete");
     if (directTextEdits.length > 0) {
-      const directResult = this.directTextEditor.apply(pdfDoc, directTextEdits);
-      editedCount += directResult.replacedCount;
-      deletedCount += directResult.deletedCount;
-      if (directResult.replacedCount + directResult.deletedCount !== directTextEdits.length) {
-        throw new Error(
-          "PDF 텍스트 직접 수정 검증에 실패했습니다. 원본 글꼴과 텍스트 명령을 보존하지 못할 수 있어 저장을 중단했습니다."
-        );
+      const nativeResult = this.nativeTextEditor.applyTextEdits(pdfDoc, directTextEdits);
+      editedCount += nativeResult.replacedCount;
+      deletedCount += nativeResult.deletedCount;
+      warnings.push(...nativeResult.warnings);
+
+      for (const insertion of nativeResult.replacementFontInsertions) {
+        await this.insertReplacementFontText(pdfDoc, insertion.edit);
+        editedCount += 1;
       }
     }
 
@@ -404,6 +405,43 @@ export class PdfEditorService {
           mimeType: edit.mimeType === "image/png" ? edit.mimeType : undefined
         }
       ];
+    });
+  }
+
+  private async insertReplacementFontText(pdfDoc: PDFDocument, edit: PdfEditorEdit): Promise<void> {
+    const page = pdfDoc.getPage(edit.pageNumber - 1);
+    const pageHeight = page.getHeight();
+    const x = clamp(edit.x, 0, page.getWidth());
+    const yTop = clamp(edit.y, 0, pageHeight);
+    const width = clamp(edit.width, 1, page.getWidth());
+    const height = clamp(edit.height, Math.max(6, edit.fontSize * 0.9), pageHeight);
+    const pdfY = clamp(pageHeight - yTop - height, 0, pageHeight);
+    const fontSize = clamp(edit.fontSize || 10, 5, 96);
+    const replacement = (edit.replacementText || "").normalize("NFC");
+
+    if (/\r|\n/.test(replacement)) {
+      throw new Error(
+        "한 줄 텍스트를 여러 줄로 바꾸면 원본 줄 간격이 틀어질 수 있어 PDF 저장을 중단했습니다. 텍스트 추가 기능으로 별도 줄을 추가해주세요."
+      );
+    }
+
+    const fontChoice = await this.fonts.resolveEmbeddedFont(
+      pdfDoc,
+      replacement,
+      edit.fontFamily,
+      edit.fontWeight,
+      edit.fontStyle
+    );
+    const color = parsePdfEditorRgb(edit.color);
+    drawFittedEditorTextLine({
+      page,
+      font: fontChoice.font,
+      text: replacement,
+      x,
+      y: pdfY,
+      fontSize,
+      maxWidth: Math.max(1, width),
+      color
     });
   }
 
