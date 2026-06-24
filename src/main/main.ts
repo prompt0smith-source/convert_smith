@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { app, BrowserWindow, Notification, ipcMain, screen } from "electron";
+import { app, BrowserWindow, Notification, ipcMain, protocol, screen } from "electron";
 import type { Rectangle } from "electron";
 import { registerConversionHandlers } from "./ipc/conversionHandlers.js";
 import { registerContextMenuHandlers } from "./ipc/contextMenuHandlers.js";
@@ -43,6 +43,19 @@ const COMPACT_WINDOW_MIN_SIZE = { width: 360, height: 460 };
 const PDF_EDITOR_WINDOW_MIN_SIZE = { width: 920, height: 680 };
 const PDF_EDITOR_WINDOW_SIZE = { width: 1180, height: 840 };
 const WINDOW_WORK_AREA_MARGIN = 12;
+const LOCAL_FILE_PROTOCOL = "convert-smith-file";
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: LOCAL_FILE_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
+    }
+  }
+]);
 
 if (process.platform === "win32") {
   app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -54,6 +67,49 @@ function getAppIconPath(): string {
     return path.join(process.resourcesPath, "build", iconName);
   }
   return path.join(__dirname, "../../build", process.platform === "darwin" ? "icon.icns" : process.platform === "win32" ? "icon.ico" : "icon.png");
+}
+
+function registerLocalFileProtocol(): void {
+  protocol.handle(LOCAL_FILE_PROTOCOL, async (request) => {
+    try {
+      const requestUrl = new URL(request.url);
+      if (requestUrl.hostname !== "preview") {
+        return createProtocolTextResponse("Not found", 404);
+      }
+      const token = requestUrl.pathname.split("/").filter(Boolean)[0];
+      const filePath = pathAccessRegistry.resolvePreviewToken(token || "");
+      const bytes = await readFile(filePath);
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          "Content-Type": getPreviewContentType(filePath),
+          "Content-Length": String(bytes.byteLength),
+          "Cache-Control": "no-store"
+        }
+      });
+    } catch (error) {
+      return createProtocolTextResponse(error instanceof Error ? error.message : "Preview failed", 403);
+    }
+  });
+}
+
+function createProtocolTextResponse(message: string, status: number): Response {
+  return new Response(message, {
+    status,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+function getPreviewContentType(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".pdf") return "application/pdf";
+  if (extension === ".png") return "image/png";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".webp") return "image/webp";
+  return "application/octet-stream";
 }
 
 function createWindow(): BrowserWindow {
@@ -189,6 +245,7 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     await loadAppSettings();
+    registerLocalFileProtocol();
     registerConversionHandlers(conversionService, pathAccessRegistry);
     registerPdfToolHandlers(pdfToolService, pathAccessRegistry);
     registerPdfEditorHandlers(pdfEditorService, pathAccessRegistry);

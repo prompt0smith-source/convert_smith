@@ -14,5 +14,7 @@ These rules are mandatory for every future change to the PDF editor.
 6. Overlay UI may be used only for selection handles, caret/input capture, drag handles, warnings, and temporary interaction controls. Overlay UI must not be treated as the saved PDF content.
 7. For edit preview, prefer a real temporary PDF copy created by the native edit engine and opened in the viewer. Do not use screenshot/canvas/image compositing as the authoritative preview or save path.
 8. When a direct edit is unsafe or ambiguous, stop saving. Do not partially save a fake-looking result.
+9. In edit mode, do not keep the original PDF viewer/iframe as the active background behind editable draft objects. Use a separated draft workspace instead, then apply changes through the native save path only when the user saves.
+10. Do not regenerate live preview PDFs on every text input, drag, or delete action. Edit-mode interactions must update local draft state immediately without showing loading spinners. Native PDF generation is allowed on edit-mode entry only if it creates a stable working copy, and on explicit save.
 
 Violation of these rules is a blocking bug, not a UI polish issue.

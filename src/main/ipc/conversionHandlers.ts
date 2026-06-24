@@ -182,7 +182,7 @@ export function registerConversionHandlers(service: ConversionService, pathAcces
     if (typeof filePath !== "string") {
       throw new Error("파일 경로가 올바르지 않습니다.");
     }
-    return service.getNativePreviewUrl(pathAccess.assertAllowed(filePath));
+    return pathAccess.createPreviewUrl(filePath);
   });
 
   ipcMain.handle("file:preview", async (_event, filePath: unknown) => {

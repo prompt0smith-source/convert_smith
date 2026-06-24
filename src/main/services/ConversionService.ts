@@ -1,5 +1,4 @@
 ﻿import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { mkdir, stat, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
@@ -234,11 +233,6 @@ export class ConversionService {
         size: info.size
       }
     };
-  }
-
-  async getNativePreviewUrl(filePath: string): Promise<string> {
-    const resolved = await this.validation.validateInputPath(filePath);
-    return pathToFileURL(resolved).toString();
   }
 
   cancelJob(jobId: string): boolean {

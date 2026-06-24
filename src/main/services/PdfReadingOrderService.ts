@@ -68,17 +68,16 @@ function extractPdfTextFragments(
       if (!text.trim() || !Array.isArray(item.transform)) return undefined;
 
       const transformed = pdfjs.Util.transform(viewport.transform, item.transform);
-      const fontSize = Math.max(
-        Math.hypot(Number(transformed[0]) || 0, Number(transformed[1]) || 0),
-        Math.hypot(Number(transformed[2]) || 0, Number(transformed[3]) || 0),
-        Number(item.height) || 0,
-        8
-      );
-      const rawWidth = Math.max(Number(item.width) || text.length * fontSize * 0.48, fontSize * 0.5);
-      const rawHeight = Math.max(Number(item.height) || fontSize, fontSize * 0.8);
+      const horizontalScale = Math.hypot(Number(transformed[0]) || 0, Number(transformed[1]) || 0);
+      const verticalScale = Math.hypot(Number(transformed[2]) || 0, Number(transformed[3]) || 0);
+      const fontSize = Math.max(verticalScale, horizontalScale, 1);
+      const rawWidth = Math.max(Number(item.width) || text.length * fontSize * 0.48, fontSize * 0.25);
+      const measuredHeight = Math.max(Number(item.height) || fontSize, fontSize * 0.72);
+      const rawHeight = clamp(measuredHeight, fontSize * 0.55, fontSize * 1.18);
+      const ascentRatio = getPdfFontAscentRatio(textContent, item.fontName);
       const baselineY = Number(transformed[5]) || 0;
       const left = clamp(Number(transformed[4]) || 0, 0, viewport.width);
-      const top = clamp(baselineY - rawHeight, 0, viewport.height);
+      const top = clamp(baselineY - rawHeight * ascentRatio, 0, viewport.height);
       const width = rawWidth * layoutScale;
       const height = rawHeight * layoutScale;
       const x = left * layoutScale;
@@ -275,6 +274,16 @@ function getPdfFontStyle(textContent: any, fontName?: string): string | undefine
   if (!fontName || !textContent?.styles?.[fontName]) return undefined;
   const style = textContent.styles[fontName].fontStyle;
   return typeof style === "string" && style.trim() ? style : undefined;
+}
+
+function getPdfFontAscentRatio(textContent: any, fontName?: string): number {
+  if (!fontName || !textContent?.styles?.[fontName]) return 0.8;
+  const style = textContent.styles[fontName];
+  const ascent = Number(style?.ascent);
+  if (Number.isFinite(ascent) && ascent > 0) return clamp(ascent, 0.55, 1.05);
+  const descent = Number(style?.descent);
+  if (Number.isFinite(descent) && descent < 0) return clamp(1 + descent, 0.55, 1.05);
+  return 0.8;
 }
 
 function clamp(value: number, min: number, max: number): number {
