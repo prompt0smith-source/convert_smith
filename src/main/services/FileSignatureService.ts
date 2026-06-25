@@ -32,6 +32,12 @@ export class FileSignatureService {
     return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
   }
 
+  async isGif(filePath: string): Promise<boolean> {
+    const bytes = await this.readBytes(filePath, 6);
+    const signature = bytes.toString("ascii");
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+
   async isHeif(filePath: string): Promise<boolean> {
     const bytes = await this.readBytes(filePath, 64);
     if (bytes.length < 12 || bytes.subarray(4, 8).toString("ascii") !== "ftyp") return false;

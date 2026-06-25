@@ -2,6 +2,7 @@ import { FolderOpen } from "lucide-react";
 import type {
   ConversionOptions,
   ConversionType,
+  GifResolution,
   PdfImageFormat,
   PdfPageSize,
   PdfToDocxMode
@@ -30,6 +31,14 @@ const QUALITY_CONVERSIONS: ConversionType[] = [
   "avif_to_jpg",
   "tiff_to_jpg",
   "bmp_to_jpg"
+];
+
+const GIF_RESOLUTION_OPTIONS: Array<{ value: GifResolution; label: string }> = [
+  { value: "source", label: "원본 유지" },
+  { value: "720", label: "720p" },
+  { value: "480", label: "480p" },
+  { value: "360", label: "360p" },
+  { value: "240", label: "240p" }
 ];
 
 export function OutputSettings({
@@ -97,6 +106,26 @@ export function OutputSettings({
               onChange={(event) => update({ imageQuality: Number(event.target.value) })}
               className="mt-2 w-full accent-emerald-700"
             />
+          </label>
+        )}
+
+        {selectedConversion === "video_to_gif" && (
+          <label className="block text-sm font-medium text-stone-700">
+            GIF 해상도
+            <select
+              value={options.gifResolution}
+              onChange={(event) => update({ gifResolution: event.target.value as GifResolution })}
+              className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-white px-2 text-sm"
+            >
+              {GIF_RESOLUTION_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs leading-5 text-stone-500">
+              GIF는 용량이 커지기 쉬워 기본값은 480p입니다.
+            </span>
           </label>
         )}
 

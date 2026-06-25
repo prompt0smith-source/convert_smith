@@ -9,6 +9,7 @@ import { extractPdfReadingOrderFragments } from "./PdfReadingOrderService.js";
 import { applyPdfTextColors } from "./PdfTextColorService.js";
 import { extractPdfEditorPageObjects } from "./PdfEditorObjectDetectionService.js";
 import { NativePdfTextEditEngine } from "../pdf-native-edit/NativePdfTextEditEngine.js";
+import { NativePdfObjectEditEngine } from "../pdf-native-edit/NativePdfObjectEditEngine.js";
 import { PdfEditVerificationService } from "../pdf-native-edit/PdfEditVerificationService.js";
 import type { PdfNativeTextSpan } from "../pdf-native-edit/PdfTextOperatorScanner.js";
 import { FileSignatureService } from "./FileSignatureService.js";
@@ -43,6 +44,7 @@ export class PdfEditorService {
   private readonly validation = new ValidationService(this.signatures, this.dependencies.getFfprobePath());
   private readonly fonts = new PdfEditorFontService();
   private readonly nativeTextEditor = new NativePdfTextEditEngine();
+  private readonly nativeObjectEditor = new NativePdfObjectEditEngine();
   private readonly editVerification = new PdfEditVerificationService();
   private readonly previewTempDirs: string[] = [];
 
@@ -217,6 +219,7 @@ export class PdfEditorService {
     }
 
     const targetOutputDir = payload.useDatedSubfolder ? await this.createDatedOutputDir(outputDir) : outputDir;
+    await mkdir(targetOutputDir, { recursive: true });
     const outputPath = await this.createUniqueOutputPath(
       targetOutputDir,
       payload.outputName?.trim() || `${path.basename(sourcePath, path.extname(sourcePath))}_edited`,
@@ -234,17 +237,34 @@ export class PdfEditorService {
       "텍스트 수정/삭제는 원본 PDF content stream의 텍스트 명령을 우선 직접 수정합니다. 원본 글꼴로 새 문자를 표현할 수 없을 때만 원본 텍스트 명령을 비우고 로컬 글꼴을 임베드한 실제 PDF 텍스트 객체를 같은 위치에 삽입합니다. 흰 배경 덮어쓰기 방식은 사용하지 않습니다."
     ];
 
-    const nativeResult = this.nativeTextEditor.applyTextEdits(pdfDoc, edits);
-    editedCount += nativeResult.replacedCount + nativeResult.neutralizedCount;
-    deletedCount += nativeResult.deletedCount;
-    addedCount += nativeResult.addedCount;
-    warnings.push(...nativeResult.warnings);
+    const textEdits = edits.filter((edit) => edit.action !== "image" && edit.action !== "line");
+    const objectEdits = edits.filter((edit) => edit.action === "image" || edit.action === "line");
 
-    for (const insertion of nativeResult.insertions) {
-      await this.insertReplacementFontText(pdfDoc, insertion.edit);
-      if (insertion.mode === "neutralize_and_insert") editedCount += 1;
+    if (textEdits.length > 0) {
+      const nativeResult = this.nativeTextEditor.applyTextEdits(pdfDoc, textEdits);
+      editedCount += nativeResult.replacedCount + nativeResult.neutralizedCount;
+      deletedCount += nativeResult.deletedCount;
+      addedCount += nativeResult.addedCount;
+      warnings.push(...nativeResult.warnings);
+
+      for (const insertion of nativeResult.insertions) {
+        await this.insertReplacementFontText(pdfDoc, insertion.edit);
+        if (insertion.mode === "neutralize_and_insert") editedCount += 1;
+      }
     }
 
+    if (objectEdits.length > 0) {
+      const objectResult = this.nativeObjectEditor.applyObjectEdits(pdfDoc, objectEdits);
+      editedCount +=
+        objectResult.movedImageCount +
+        objectResult.duplicatedImageCount +
+        objectResult.movedLineCount +
+        objectResult.duplicatedLineCount;
+      deletedCount += objectResult.deletedImageCount + objectResult.deletedLineCount;
+      warnings.push(...objectResult.warnings);
+    }
+
+    await mkdir(path.dirname(outputPath), { recursive: true });
     await writeFile(outputPath, await pdfDoc.save({ useObjectStreams: false }));
     if (!(await this.signatures.isPdf(outputPath))) {
       throw new Error("PDF 편집 결과 검증에 실패했습니다. 결과 파일이 정상 PDF가 아닙니다.");
@@ -334,6 +354,11 @@ export class PdfEditorService {
           pageNumber,
           sourceIndex: edit.sourceIndex === undefined ? undefined : Math.trunc(finiteNumber(edit.sourceIndex, 0)),
           nativeSpanId: typeof edit.nativeSpanId === "string" ? edit.nativeSpanId.slice(0, 120) : undefined,
+          nativeObjectId: typeof edit.nativeObjectId === "string" ? edit.nativeObjectId.slice(0, 160) : undefined,
+          sourceObjectId: typeof edit.sourceObjectId === "string" ? edit.sourceObjectId.slice(0, 160) : undefined,
+          objectEditMode: edit.objectEditMode === "delete" || edit.objectEditMode === "move" || edit.objectEditMode === "duplicate"
+            ? edit.objectEditMode
+            : undefined,
           saveMode: typeof edit.saveMode === "string" ? edit.saveMode : undefined,
           originalText: String(edit.originalText || "").slice(0, 5000),
           replacementText: String(edit.replacementText || "").slice(0, 5000),
@@ -406,7 +431,9 @@ export class PdfEditorService {
       fontChoice.font,
       width,
       height,
-      fontSize
+      fontSize,
+      page.getWidth(),
+      x
     );
 
     drawEditorTextLine({
@@ -427,7 +454,9 @@ export class PdfEditorService {
     font: PDFFont,
     width: number,
     height: number,
-    fontSize: number
+    fontSize: number,
+    pageWidth: number,
+    x: number
   ): void {
     if (!fontEmbedded) {
       throw new Error(
@@ -442,7 +471,16 @@ export class PdfEditorService {
     }
 
     const measuredWidth = font.widthOfTextAtSize(replacement, fontSize);
-    if (edit.action !== "add" && measuredWidth > width * 1.04) {
+    const usesInsertedTextObject =
+      edit.saveMode === "neutralize_and_insert" || edit.saveMode === "add_text" || edit.action === "add";
+    const pageRemainingWidth = Math.max(1, pageWidth - x);
+    if (usesInsertedTextObject && measuredWidth > pageRemainingWidth * 1.02) {
+      throw new Error(
+        "수정한 텍스트가 페이지 오른쪽 경계를 넘어갈 수 있어 PDF 저장을 중단했습니다. 텍스트 칸을 줄이거나 위치를 조정해주세요."
+      );
+    }
+
+    if (!usesInsertedTextObject && edit.action !== "add" && measuredWidth > width * 1.04) {
       throw new Error(
         "수정한 텍스트가 원본 텍스트 영역보다 길어 글씨체나 자간이 변형될 수 있습니다. 강제로 압축하지 않고 저장을 중단했습니다."
       );
@@ -566,11 +604,19 @@ function attachNativeSpanMetadata(
 ): void {
   const usedSpanIds = new Set<string>();
   const spansByPageAndText = new Map<string, PdfNativeTextSpan[]>();
+  const spansByPage = new Map<number, PdfNativeTextSpan[]>();
   for (const span of spans) {
     const key = createNativeMatchKey(span.pageNumber, span.normalizedText);
     const bucket = spansByPageAndText.get(key) || [];
     bucket.push(span);
     spansByPageAndText.set(key, bucket);
+
+    const pageBucket = spansByPage.get(span.pageNumber) || [];
+    pageBucket.push(span);
+    spansByPage.set(span.pageNumber, pageBucket);
+  }
+  for (const pageSpans of spansByPage.values()) {
+    pageSpans.sort((a, b) => a.order - b.order);
   }
 
   let mappedCount = 0;
@@ -581,7 +627,27 @@ function attachNativeSpanMetadata(
 
     const match = chooseNativeSpanMatch(candidates, item.sourceIndex);
     if (!match) {
-      item.editCapability = candidates.length > 1 ? "not_editable" : "not_editable";
+      const groupMatch = chooseNativeSpanGroupMatch(
+        spansByPage.get(item.pageNumber) || [],
+        item.text,
+        item.sourceIndex,
+        usedSpanIds
+      );
+      if (groupMatch) {
+        const ids = groupMatch.map((span) => span.id);
+        for (const span of groupMatch) usedSpanIds.add(span.id);
+        mappedCount += 1;
+        item.nativeSpanId = `group:${ids.join("|")}`;
+        item.editCapability = "neutralize_and_insert";
+        item.editCapabilityReason = "multi_span_text_group";
+        item.nativeFontResourceName = groupMatch[0]?.fontResourceName;
+        item.nativeTextEncoding = groupMatch.some((span) => span.encoding === "to_unicode_cmap")
+          ? "to_unicode_cmap"
+          : "simple_ansi";
+        continue;
+      }
+
+      item.editCapability = "not_editable";
       item.editCapabilityReason = candidates.length > 1 ? "ambiguous_text_span" : "text_span_not_found";
       continue;
     }
@@ -610,8 +676,54 @@ function chooseNativeSpanMatch(candidates: PdfNativeTextSpan[], sourceIndex: num
     .sort((a, b) => a.distance - b.distance);
   if (ranked.length < 2) return ranked[0]?.span;
   if (ranked[0].distance === ranked[1].distance) return undefined;
-  if (ranked[0].distance > 4) return undefined;
+  if (ranked[0].distance > 16) return undefined;
   return ranked[0].span;
+}
+
+function chooseNativeSpanGroupMatch(
+  pageSpans: PdfNativeTextSpan[],
+  text: string,
+  sourceIndex: number | undefined,
+  usedSpanIds: Set<string>
+): PdfNativeTextSpan[] | undefined {
+  const normalizedTarget = normalizeNativeMatchText(text);
+  const compactTarget = normalizeCompactNativeMatchText(text);
+  if (!normalizedTarget || compactTarget.length < 2) return undefined;
+
+  const matches: Array<{ spans: PdfNativeTextSpan[]; distance: number; compactDistance: number }> = [];
+  const maxGroupSize = Math.min(8, pageSpans.length);
+
+  for (let start = 0; start < pageSpans.length; start += 1) {
+    const group: PdfNativeTextSpan[] = [];
+    for (let offset = 0; offset < maxGroupSize && start + offset < pageSpans.length; offset += 1) {
+      const span = pageSpans[start + offset];
+      if (usedSpanIds.has(span.id)) break;
+      group.push(span);
+      if (group.length < 2) continue;
+
+      const joined = group.map((item) => item.text).join(" ");
+      const normalizedJoined = normalizeNativeMatchText(joined);
+      const compactJoined = normalizeCompactNativeMatchText(joined);
+      if (normalizedJoined !== normalizedTarget && compactJoined !== compactTarget) continue;
+
+      const firstOrder = group[0].order;
+      const lastOrder = group[group.length - 1].order;
+      const midpointOrder = (firstOrder + lastOrder) / 2;
+      matches.push({
+        spans: [...group],
+        distance: sourceIndex === undefined ? 0 : Math.abs(midpointOrder - sourceIndex),
+        compactDistance: Math.abs(compactJoined.length - compactTarget.length)
+      });
+    }
+  }
+
+  if (matches.length === 0) return undefined;
+  matches.sort((a, b) => a.distance - b.distance || a.compactDistance - b.compactDistance || a.spans.length - b.spans.length);
+  if (matches.length > 1 && sourceIndex !== undefined && Math.abs(matches[0].distance - matches[1].distance) < 0.01) {
+    return undefined;
+  }
+  if (sourceIndex !== undefined && matches[0].distance > 24) return undefined;
+  return matches[0].spans;
 }
 
 function createNativeMatchKey(pageNumber: number, text: string): string {
@@ -620,6 +732,10 @@ function createNativeMatchKey(pageNumber: number, text: string): string {
 
 function normalizeNativeMatchText(text: string): string {
   return text.replace(/\u0000/g, "").replace(/\s+/g, " ").trim().normalize("NFC");
+}
+
+function normalizeCompactNativeMatchText(text: string): string {
+  return normalizeNativeMatchText(text).replace(/\s+/g, "");
 }
 
 async function runBestEffortStep(

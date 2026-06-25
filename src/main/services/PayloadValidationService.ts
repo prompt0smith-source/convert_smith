@@ -7,6 +7,7 @@ import type {
   PdfToolOptions,
   PdfToolType,
   PdfToDocxMode,
+  GifResolution,
   SortMode,
   StartConversionPayload,
   StartPdfToolPayload
@@ -35,6 +36,7 @@ const CONVERSION_TYPES: readonly ConversionType[] = [
   "bmp_to_jpg",
   "bmp_to_png",
   "mp4_to_mp3",
+  "video_to_gif",
   "mov_to_mp4",
   "webm_to_mp4",
   "mkv_to_mp4",
@@ -59,6 +61,7 @@ const PDF_TOOL_TYPES: readonly PdfToolType[] = [
 const PDF_IMAGE_FORMATS: readonly PdfImageFormat[] = ["jpg", "png"];
 const PDF_PAGE_SIZES: readonly PdfPageSize[] = ["auto", "a4_portrait", "a4_landscape"];
 const PDF_TO_DOCX_MODES: readonly PdfToDocxMode[] = ["editable_text", "visual_preservation"];
+const GIF_RESOLUTIONS: readonly GifResolution[] = ["source", "720", "480", "360", "240"];
 const SORT_MODES: readonly SortMode[] = ["basic", "custom", "name", "date", "type", "size"];
 const ROTATIONS = new Set([0, 90, 180, 270]);
 const MAX_SOURCE_PATHS = 200;
@@ -72,6 +75,7 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   pdfRenderScale: 2,
   pdfPageSize: "auto",
   pdfToDocxMode: "visual_preservation",
+  gifResolution: "480",
   videoCompatibilityMode: true,
   overwritePolicy: "increment",
   sortMode: "basic",
@@ -130,6 +134,7 @@ function normalizeConversionOptions(value: unknown): ConversionOptions {
       "PDF → Word 변환 모드가 올바르지 않습니다.",
       "visual_preservation"
     ),
+    gifResolution: normalizeEnum(raw.gifResolution, GIF_RESOLUTIONS, "GIF 해상도 옵션이 올바르지 않습니다.", "480"),
     videoCompatibilityMode: typeof raw.videoCompatibilityMode === "boolean" ? raw.videoCompatibilityMode : true,
     overwritePolicy: "increment",
     sortMode: normalizeEnum(raw.sortMode, SORT_MODES, "정렬 옵션이 올바르지 않습니다.", "basic"),

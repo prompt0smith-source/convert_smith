@@ -21,6 +21,7 @@ export type ConversionType =
   | "bmp_to_jpg"
   | "bmp_to_png"
   | "mp4_to_mp3"
+  | "video_to_gif"
   | "mov_to_mp4"
   | "webm_to_mp4"
   | "mkv_to_mp4"
@@ -42,6 +43,7 @@ export type ConversionStatus =
 export type PdfPageSize = "auto" | "a4_portrait" | "a4_landscape";
 export type PdfImageFormat = "jpg" | "png";
 export type PdfToDocxMode = "editable_text" | "visual_preservation";
+export type GifResolution = "source" | "720" | "480" | "360" | "240";
 export type OverwritePolicy = "increment";
 export type SortMode = "basic" | "custom" | "name" | "date" | "type" | "size";
 export type ConvertMode = "batch" | "individual";
@@ -87,6 +89,7 @@ export interface ConversionOptions {
   pdfRenderScale: 1 | 2 | 3;
   pdfPageSize: PdfPageSize;
   pdfToDocxMode: PdfToDocxMode;
+  gifResolution: GifResolution;
   videoCompatibilityMode: boolean;
   overwritePolicy: OverwritePolicy;
   libreOfficePath?: string;
@@ -195,6 +198,8 @@ export interface PdfEditorPageSize {
 
 export interface PdfEditorImageItem {
   id: string;
+  nativeObjectId?: string;
+  sourceObjectId?: string;
   pageNumber: number;
   x: number;
   y: number;
@@ -206,6 +211,8 @@ export interface PdfEditorImageItem {
 
 export interface PdfEditorGraphicLineItem {
   id: string;
+  nativeObjectId?: string;
+  sourceObjectId?: string;
   pageNumber: number;
   x: number;
   y: number;
@@ -260,6 +267,9 @@ export interface PdfEditorEdit {
   pageNumber: number;
   sourceIndex?: number;
   nativeSpanId?: string;
+  nativeObjectId?: string;
+  sourceObjectId?: string;
+  objectEditMode?: "move" | "delete" | "duplicate";
   saveMode?: PdfEditorSaveMode;
   originalText?: string;
   replacementText?: string;

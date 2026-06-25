@@ -53,6 +53,7 @@ async function extractEditorImages(pdfjs: any, page: any, pageNumber: number): P
     const images = await extractPdfPlacedImages(pdfjs, page, 1);
     return images.map((image, index) => ({
       id: `p${pageNumber}-image-${index}-${sanitizeId(image.id)}`,
+      nativeObjectId: `p${pageNumber}-image-${index}`,
       pageNumber,
       x: roundPoint(image.x),
       y: roundPoint(image.y),
@@ -323,6 +324,7 @@ function toGraphicLine(pageNumber: number, segment: RawLineSegment, index: numbe
 
   return {
     id: `p${pageNumber}-line-${index}`,
+    nativeObjectId: `p${pageNumber}-line-${index}`,
     pageNumber,
     x: roundPoint(left),
     y: roundPoint(top),

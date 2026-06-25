@@ -35,6 +35,10 @@ export class EngineRouter {
         return this.convertEach(job, "mp3", createOutputPath, (input, output) =>
           this.ffmpeg.convertAudioToMp3(input, output, onProgress, signal)
         );
+      case "video_to_gif":
+        return this.convertEach(job, "gif", createOutputPath, (input, output) =>
+          this.ffmpeg.convertVideoToGif(input, output, job.options.gifResolution, onProgress, signal)
+        );
       case "mov_to_mp4":
       case "webm_to_mp4":
       case "mkv_to_mp4":

@@ -1,6 +1,6 @@
 ﻿import { ExternalLink, Minus, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, MutableRefObject } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type {
   PdfEditorGraphicLineItem,
@@ -39,6 +39,7 @@ interface DragState {
   origin: PdfEditorBoxGeometry;
   lineOrigin?: PdfEditorGraphicLineItem;
   lineMode?: LineDragMode;
+  imageMode?: ImageResizeMode;
   moved: boolean;
   historyCaptured: boolean;
 }
@@ -50,8 +51,20 @@ interface EditorHistorySnapshot {
   geometryOverrides: Record<string, PdfEditorBoxGeometry>;
   lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem>;
   imageGeometryOverrides: Record<string, PdfEditorImageItem>;
+  deletedLineIds: string[];
   deletedImageIds: string[];
+  copiedLines: PdfEditorGraphicLineItem[];
+  copiedImages: PdfEditorImageItem[];
 }
+
+interface DragGuideState {
+  geometry: PdfEditorBoxGeometry;
+  label: string;
+}
+
+type ObjectClipboard =
+  | { kind: "image"; item: PdfEditorImageItem }
+  | { kind: "line"; item: PdfEditorGraphicLineItem };
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.8;
@@ -60,12 +73,26 @@ const HISTORY_LIMIT = 80;
 const PDF_PAGE_SURFACE_MARGIN_PX = 0;
 
 type LineDragMode = "move" | "start" | "end";
+type ImageResizeMode = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+const IMAGE_RESIZE_HANDLES: Array<{ mode: Exclude<ImageResizeMode, "move">; cursor: CSSProperties["cursor"] }> = [
+  { mode: "n", cursor: "ns-resize" },
+  { mode: "s", cursor: "ns-resize" },
+  { mode: "e", cursor: "ew-resize" },
+  { mode: "w", cursor: "ew-resize" },
+  { mode: "ne", cursor: "nesw-resize" },
+  { mode: "nw", cursor: "nwse-resize" },
+  { mode: "se", cursor: "nwse-resize" },
+  { mode: "sw", cursor: "nesw-resize" }
+];
 
 export function PdfEditorWindowApp(): JSX.Element {
   const token = new URLSearchParams(window.location.search).get("token") || "";
   const pageFrameRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState>();
   const draftPreviewSequenceRef = useRef(0);
+  const objectClipboardRef = useRef<ObjectClipboard>();
+  const lastPagePointerRef = useRef<{ pageNumber: number; x: number; y: number }>();
 
   const [context, setContext] = useState<PdfEditorWindowContext>();
   const [layer, setLayer] = useState<PdfEditorTextLayer>();
@@ -76,13 +103,17 @@ export function PdfEditorWindowApp(): JSX.Element {
   const [geometryOverrides, setGeometryOverrides] = useState<Record<string, PdfEditorBoxGeometry>>({});
   const [lineGeometryOverrides, setLineGeometryOverrides] = useState<Record<string, PdfEditorGraphicLineItem>>({});
   const [imageGeometryOverrides, setImageGeometryOverrides] = useState<Record<string, PdfEditorImageItem>>({});
+  const [deletedLineIds, setDeletedLineIds] = useState<Set<string>>(new Set());
   const [deletedImageIds, setDeletedImageIds] = useState<Set<string>>(new Set());
+  const [copiedLines, setCopiedLines] = useState<PdfEditorGraphicLineItem[]>([]);
+  const [copiedImages, setCopiedImages] = useState<PdfEditorImageItem[]>([]);
   const [historyPast, setHistoryPast] = useState<EditorHistorySnapshot[]>([]);
   const [historyFuture, setHistoryFuture] = useState<EditorHistorySnapshot[]>([]);
   const [selectedPage, setSelectedPage] = useState(1);
   const [selectedTarget, setSelectedTarget] = useState<DragTarget>();
   const [selectedObject, setSelectedObject] = useState<PdfObjectTarget>();
   const [hoveredTextId, setHoveredTextId] = useState<string>();
+  const [visualTextBoxes, setVisualTextBoxes] = useState<Record<string, PdfEditorBoxGeometry>>({});
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<DragTarget>();
   const [editMode, setEditMode] = useState(false);
   const [zoom, setZoom] = useState(1.18);
@@ -90,7 +121,9 @@ export function PdfEditorWindowApp(): JSX.Element {
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const [result, setResult] = useState<PdfEditorSaveResult>();
+  const [dragGuide, setDragGuide] = useState<DragGuideState>();
 
   useEffect(() => {
     let cancelled = false;
@@ -140,12 +173,18 @@ export function PdfEditorWindowApp(): JSX.Element {
     [layer?.items, selectedPage]
   );
   const currentPageImages = useMemo(
-    () => (layer?.images || []).filter((item) => item.pageNumber === selectedPage),
-    [layer?.images, selectedPage]
+    () => [
+      ...(layer?.images || []).filter((item) => item.pageNumber === selectedPage),
+      ...copiedImages.filter((item) => item.pageNumber === selectedPage)
+    ],
+    [copiedImages, layer?.images, selectedPage]
   );
   const currentPageLines = useMemo(
-    () => (layer?.lines || []).filter((item) => item.pageNumber === selectedPage),
-    [layer?.lines, selectedPage]
+    () => [
+      ...(layer?.lines || []).filter((item) => item.pageNumber === selectedPage),
+      ...copiedLines.filter((item) => item.pageNumber === selectedPage)
+    ],
+    [copiedLines, layer?.lines, selectedPage]
   );
   const currentPageTables = useMemo(
     () => (layer?.tables || []).filter((item) => item.pageNumber === selectedPage),
@@ -154,10 +193,58 @@ export function PdfEditorWindowApp(): JSX.Element {
   const currentPageAdditions = additions.filter((item) => item.pageNumber === selectedPage);
   const changedCount = useMemo(
     () =>
-      countPdfEditorChanges(layer?.items || [], drafts, deletedIds, additions, geometryOverrides, lineGeometryOverrides, imageGeometryOverrides) +
-      deletedImageIds.size,
-    [additions, deletedIds, deletedImageIds.size, drafts, geometryOverrides, imageGeometryOverrides, layer?.items, lineGeometryOverrides]
+      countPdfEditorChanges(
+        layer?.items || [],
+        drafts,
+        deletedIds,
+        additions,
+        geometryOverrides,
+        lineGeometryOverrides,
+        imageGeometryOverrides,
+        deletedLineIds,
+        deletedImageIds,
+        copiedLines,
+        copiedImages
+      ),
+    [additions, copiedImages, copiedLines, deletedIds, deletedImageIds, deletedLineIds, drafts, geometryOverrides, imageGeometryOverrides, layer?.items, lineGeometryOverrides]
   );
+
+  useLayoutEffect(() => {
+    if (!editMode || !pageFrameRef.current) {
+      setVisualTextBoxes({});
+      return undefined;
+    }
+
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      const surface = pageFrameRef.current?.querySelector<HTMLElement>(".pdf-editor-page-surface");
+      if (!surface) {
+        setVisualTextBoxes({});
+        return;
+      }
+
+      const next: Record<string, PdfEditorBoxGeometry> = {};
+      const surfaceRect = surface.getBoundingClientRect();
+      const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+
+      surface
+        .querySelectorAll<HTMLElement>("[data-pdf-editor-visual-id]")
+        .forEach((element) => {
+          const id = element.dataset.pdfEditorVisualId;
+          if (!id || !element.textContent?.trim()) return;
+          const box = measureVisibleTextBox(element, surfaceRect, safeZoom);
+          if (box) next[id] = box;
+        });
+
+      setVisualTextBoxes((current) => (areGeometryMapsEqual(current, next) ? current : next));
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [currentPageItems, deletedIds, drafts, editMode, geometryOverrides, selectedPage, zoom]);
 
   const loadNativePreviewPath = (sourcePath: string) => {
     const sequence = draftPreviewSequenceRef.current + 1;
@@ -193,7 +280,10 @@ export function PdfEditorWindowApp(): JSX.Element {
     geometryOverrides: cloneGeometryOverrides(geometryOverrides),
     lineGeometryOverrides: cloneLineGeometryOverrides(lineGeometryOverrides),
     imageGeometryOverrides: cloneImageGeometryOverrides(imageGeometryOverrides),
-    deletedImageIds: Array.from(deletedImageIds)
+    deletedLineIds: Array.from(deletedLineIds),
+    deletedImageIds: Array.from(deletedImageIds),
+    copiedLines: copiedLines.map((item) => ({ ...item, dashArray: item.dashArray ? [...item.dashArray] : undefined })),
+    copiedImages: copiedImages.map((item) => ({ ...item }))
   });
 
   const restoreHistorySnapshot = (snapshot: EditorHistorySnapshot) => {
@@ -203,8 +293,12 @@ export function PdfEditorWindowApp(): JSX.Element {
     setGeometryOverrides(cloneGeometryOverrides(snapshot.geometryOverrides));
     setLineGeometryOverrides(cloneLineGeometryOverrides(snapshot.lineGeometryOverrides));
     setImageGeometryOverrides(cloneImageGeometryOverrides(snapshot.imageGeometryOverrides));
+    setDeletedLineIds(new Set(snapshot.deletedLineIds));
     setDeletedImageIds(new Set(snapshot.deletedImageIds));
+    setCopiedLines(snapshot.copiedLines.map((item) => ({ ...item, dashArray: item.dashArray ? [...item.dashArray] : undefined })));
+    setCopiedImages(snapshot.copiedImages.map((item) => ({ ...item })));
     setDeleteConfirmTarget(undefined);
+    setDragGuide(undefined);
     setResult(undefined);
   };
 
@@ -216,12 +310,16 @@ export function PdfEditorWindowApp(): JSX.Element {
     setGeometryOverrides({});
     setLineGeometryOverrides({});
     setImageGeometryOverrides({});
+    setDeletedLineIds(new Set());
     setDeletedImageIds(new Set());
+    setCopiedLines([]);
+    setCopiedImages([]);
     setHistoryPast([]);
     setHistoryFuture([]);
     setSelectedTarget(undefined);
     setSelectedObject(undefined);
     setDeleteConfirmTarget(undefined);
+    setDragGuide(undefined);
     setEditMode(false);
     setError(undefined);
     if (context?.sourcePath) loadNativePreviewPath(context.sourcePath);
@@ -275,14 +373,8 @@ export function PdfEditorWindowApp(): JSX.Element {
       setError("저장할 폴더가 지정되지 않았습니다. 메인 창에서 저장 폴더를 지정한 뒤 Viewer를 다시 열어주세요.");
       return;
     }
-    if (Object.keys(imageGeometryOverrides).length > 0 || deletedImageIds.size > 0 || Object.keys(lineGeometryOverrides).length > 0) {
-      setError(
-        "이미지/선 객체 이동·삭제 저장은 아직 PDF native object patch가 구현되지 않았습니다.\n흰 박스나 이미지 덮어쓰기 방식은 사용하지 않았습니다. 텍스트 수정만 저장할 수 있습니다."
-      );
-      return;
-    }
     const liveValues = collectLiveEditorValues(layer.items, drafts, additions);
-    const edits = buildPdfEditorEdits(
+    const allEdits = buildPdfEditorEdits(
       layer.items,
       liveValues.drafts,
       deletedIds,
@@ -291,15 +383,25 @@ export function PdfEditorWindowApp(): JSX.Element {
       layer.lines,
       lineGeometryOverrides,
       layer.images,
-      imageGeometryOverrides
+      imageGeometryOverrides,
+      deletedLineIds,
+      deletedImageIds,
+      copiedLines,
+      copiedImages
     );
+    const edits = allEdits;
     if (edits.length === 0) {
       setError("저장할 수정 내용이 없습니다.");
       return;
     }
 
+    const pendingLineGeometryOverrides = cloneLineGeometryOverrides(lineGeometryOverrides);
+    const pendingImageGeometryOverrides = cloneImageGeometryOverrides(imageGeometryOverrides);
+    const pendingDeletedLineIds = new Set(deletedLineIds);
+    const pendingDeletedImageIds = new Set(deletedImageIds);
     setIsSaving(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       const saveResult = await window.convertSmith.savePdfEditorTextEdits({
         sourcePath: context.sourcePath,
@@ -314,9 +416,14 @@ export function PdfEditorWindowApp(): JSX.Element {
       setDeletedIds(new Set());
       setAdditions([]);
       setGeometryOverrides({});
-      setLineGeometryOverrides({});
-      setImageGeometryOverrides({});
-      setDeletedImageIds(new Set());
+      const nextLineIds = new Set(nextLayer.lines.map((line) => line.id));
+      const nextImageIds = new Set(nextLayer.images.map((image) => image.id));
+      setLineGeometryOverrides(filterObjectMapByIds(pendingLineGeometryOverrides, nextLineIds));
+      setImageGeometryOverrides(filterObjectMapByIds(pendingImageGeometryOverrides, nextImageIds));
+      setDeletedLineIds(new Set([...pendingDeletedLineIds].filter((id) => nextLineIds.has(id))));
+      setDeletedImageIds(new Set([...pendingDeletedImageIds].filter((id) => nextImageIds.has(id))));
+      setCopiedLines([]);
+      setCopiedImages([]);
       setHistoryPast([]);
       setHistoryFuture([]);
       setSelectedTarget(undefined);
@@ -343,14 +450,144 @@ export function PdfEditorWindowApp(): JSX.Element {
     }
   };
 
+  const getEditableImage = (id: string): PdfEditorImageItem | undefined => {
+    const source = copiedImages.find((image) => image.id === id) || layer?.images.find((image) => image.id === id);
+    if (!source) return undefined;
+    return { ...source, ...(imageGeometryOverrides[id] || {}) };
+  };
+
+  const getEditableLine = (id: string): PdfEditorGraphicLineItem | undefined => {
+    const source = copiedLines.find((line) => line.id === id) || layer?.lines.find((line) => line.id === id);
+    if (!source) return undefined;
+    return { ...source, ...(lineGeometryOverrides[id] || {}) };
+  };
+
+  const createImageCopy = (
+    source: PdfEditorImageItem,
+    targetPage: number,
+    targetPoint?: { x: number; y: number }
+  ): PdfEditorImageItem | undefined => {
+    if (!pageSize) return undefined;
+    const sourceObjectId = source.sourceObjectId || source.nativeObjectId;
+    if (!sourceObjectId) {
+      setError("이 이미지는 PDF 내부 원본 객체를 특정하지 못해 복사할 수 없습니다.");
+      return undefined;
+    }
+    const base = {
+      ...source,
+      id: `copy-image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      pageNumber: targetPage,
+      nativeObjectId: sourceObjectId,
+      sourceObjectId
+    };
+    const x = targetPoint ? targetPoint.x - source.width / 2 : source.x + 12;
+    const y = targetPoint ? targetPoint.y - source.height / 2 : source.y + 12;
+    return { ...base, ...clampGeometry({ ...source, x, y }, pageSize) };
+  };
+
+  const createLineCopy = (
+    source: PdfEditorGraphicLineItem,
+    targetPage: number,
+    targetPoint?: { x: number; y: number }
+  ): PdfEditorGraphicLineItem | undefined => {
+    if (!pageSize) return undefined;
+    const sourceObjectId = source.sourceObjectId || source.nativeObjectId;
+    if (!sourceObjectId) {
+      setError("이 선은 PDF 내부 원본 객체를 특정하지 못해 복사할 수 없습니다.");
+      return undefined;
+    }
+    const centerX = (source.x1 + source.x2) / 2;
+    const centerY = (source.y1 + source.y2) / 2;
+    const dx = targetPoint ? targetPoint.x - centerX : 12;
+    const dy = targetPoint ? targetPoint.y - centerY : 12;
+    return normalizeLineGeometry(clampLineToPage({
+      ...source,
+      id: `copy-line-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      pageNumber: targetPage,
+      nativeObjectId: sourceObjectId,
+      sourceObjectId,
+      x1: source.x1 + dx,
+      y1: source.y1 + dy,
+      x2: source.x2 + dx,
+      y2: source.y2 + dy,
+      dashArray: source.dashArray ? [...source.dashArray] : undefined
+    }, pageSize));
+  };
+
+  const copySelectedObjectToClipboard = (): boolean => {
+    if (selectedObject?.kind === "image") {
+      const image = getEditableImage(selectedObject.id);
+      if (!image) return false;
+      objectClipboardRef.current = { kind: "image", item: image };
+      setNotice("이미지 객체를 복사했습니다. Ctrl+V로 같은 페이지 안에 붙여넣을 수 있습니다.");
+      return true;
+    }
+    if (selectedObject?.kind === "line") {
+      const line = getEditableLine(selectedObject.id);
+      if (!line) return false;
+      objectClipboardRef.current = { kind: "line", item: line };
+      setNotice("선 객체를 복사했습니다. Ctrl+V로 같은 페이지 안에 붙여넣을 수 있습니다.");
+      return true;
+    }
+    return false;
+  };
+
+  const pasteObjectNearPointer = (): boolean => {
+    const clipboard = objectClipboardRef.current;
+    if (!clipboard || !pageSize) return false;
+    const sourcePage = clipboard.item.pageNumber;
+    if (sourcePage !== selectedPage) {
+      setError("객체 붙여넣기는 현재 같은 페이지 안에서만 지원합니다.");
+      return true;
+    }
+    const pointer = lastPagePointerRef.current?.pageNumber === selectedPage
+      ? { x: lastPagePointerRef.current.x, y: lastPagePointerRef.current.y }
+      : undefined;
+    rememberHistory();
+    if (clipboard.kind === "image") {
+      const copy = createImageCopy(clipboard.item, selectedPage, pointer);
+      if (!copy) return true;
+      setCopiedImages((current) => [...current, copy]);
+      setSelectedTarget(undefined);
+      setSelectedObject({ kind: "image", id: copy.id });
+      setNotice(undefined);
+      return true;
+    }
+    const copy = createLineCopy(clipboard.item, selectedPage, pointer);
+    if (!copy) return true;
+    setCopiedLines((current) => [...current, copy]);
+    setSelectedTarget(undefined);
+    setSelectedObject({ kind: "line", id: copy.id });
+    setNotice(undefined);
+    return true;
+  };
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       const key = event.key.toLowerCase();
+      const activeElement = document.activeElement;
+      const isEditingText = activeElement instanceof HTMLElement && activeElement.isContentEditable;
       if (key === "s") {
         event.preventDefault();
         event.stopPropagation();
         void save();
+        return;
+      }
+      if (key === "c") {
+        if (isEditingText) return;
+        if (copySelectedObjectToClipboard()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+      if (key === "v") {
+        if (isEditingText) return;
+        if (pasteObjectNearPointer()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         return;
       }
       if (key === "z" && !event.shiftKey) {
@@ -368,7 +605,7 @@ export function PdfEditorWindowApp(): JSX.Element {
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [additions, changedCount, context, deletedIds, deletedImageIds, drafts, geometryOverrides, historyFuture, historyPast, imageGeometryOverrides, isSaving, layer, lineGeometryOverrides]);
+  }, [additions, changedCount, context, copiedImages, copiedLines, deletedIds, deletedImageIds, deletedLineIds, drafts, geometryOverrides, historyFuture, historyPast, imageGeometryOverrides, isSaving, layer, lineGeometryOverrides, pageSize, selectedObject, selectedPage]);
 
   const changePage = (pageNumber: number) => {
     const nextPage = Math.max(1, Math.min(pageCount || 1, Math.trunc(pageNumber) || 1));
@@ -407,16 +644,12 @@ export function PdfEditorWindowApp(): JSX.Element {
     rememberHistory();
     setDrafts((current) => ({ ...current, [item.id]: value }));
     const currentGeometry = geometryOverrides[item.id] || item;
-    const expandedGeometry = createTextDisplayGeometry(
+    const expandedGeometry = createStableDraftTextGeometry(
       currentGeometry,
+      item,
       value,
-      item.fontSize,
       zoom,
-      item.fontFamily,
-      item.fontWeight,
-      item.fontStyle,
-      pageSize,
-      item.width
+      pageSize
     );
     if (
       Math.abs(expandedGeometry.width - currentGeometry.width) > 0.1 ||
@@ -486,11 +719,19 @@ export function PdfEditorWindowApp(): JSX.Element {
       removeAddition(target.id);
     } else if (target.kind === "image") {
       deleteImageItem(target.id);
+    } else if (target.kind === "line") {
+      deleteLineItem(target.id);
     }
     setDeleteConfirmTarget(undefined);
   };
 
   const deleteImageItem = (id: string) => {
+    if (copiedImages.some((image) => image.id === id)) {
+      rememberHistory();
+      setCopiedImages((current) => current.filter((image) => image.id !== id));
+      setSelectedObject(undefined);
+      return;
+    }
     if (deletedImageIds.has(id)) return;
     rememberHistory();
     setDeletedImageIds((current) => {
@@ -499,6 +740,28 @@ export function PdfEditorWindowApp(): JSX.Element {
       return next;
     });
     setImageGeometryOverrides((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setSelectedObject(undefined);
+  };
+
+  const deleteLineItem = (id: string) => {
+    if (copiedLines.some((line) => line.id === id)) {
+      rememberHistory();
+      setCopiedLines((current) => current.filter((line) => line.id !== id));
+      setSelectedObject(undefined);
+      return;
+    }
+    if (deletedLineIds.has(id)) return;
+    rememberHistory();
+    setDeletedLineIds((current) => {
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+    setLineGeometryOverrides((current) => {
       const next = { ...current };
       delete next[id];
       return next;
@@ -536,43 +799,67 @@ export function PdfEditorWindowApp(): JSX.Element {
     if (!editMode || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    const dragLine = event.ctrlKey
+      ? createLineCopy(line, line.pageNumber, { x: (line.x1 + line.x2) / 2, y: (line.y1 + line.y2) / 2 })
+      : line;
+    if (!dragLine) return;
+    if (event.ctrlKey) {
+      rememberHistory();
+      setCopiedLines((current) => [...current, dragLine]);
+      objectClipboardRef.current = { kind: "line", item: dragLine };
+    }
     setSelectedTarget(undefined);
     setDeleteConfirmTarget(undefined);
-    setSelectedObject({ kind: "line", id: line.id });
+    setSelectedObject({ kind: "line", id: dragLine.id });
     dragRef.current = {
       pointerId: event.pointerId,
-      target: { kind: "line", id: line.id },
+      target: { kind: "line", id: dragLine.id },
       startClientX: event.clientX,
       startClientY: event.clientY,
-      origin: line,
-      lineOrigin: line,
-      lineMode: getLineDragMode(line, event, zoom),
+      origin: dragLine,
+      lineOrigin: dragLine,
+      lineMode: getLineDragMode(dragLine, event, zoom),
       moved: false,
-      historyCaptured: false
+      historyCaptured: event.ctrlKey
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
   const startImageDrag = (
     event: ReactPointerEvent<HTMLElement>,
-    image: PdfEditorImageItem
+    image: PdfEditorImageItem,
+    imageMode: ImageResizeMode = "move"
   ) => {
     if (!editMode || event.button !== 0) return;
     const targetElement = event.target;
     if (targetElement instanceof HTMLElement && targetElement.closest("[data-no-drag]")) return;
     event.preventDefault();
     event.stopPropagation();
+    const sourceImage = imageGeometryOverrides[image.id] || image;
+    const dragImage = event.ctrlKey && imageMode === "move"
+      ? createImageCopy(sourceImage, sourceImage.pageNumber, {
+          x: sourceImage.x + sourceImage.width / 2,
+          y: sourceImage.y + sourceImage.height / 2
+        })
+      : sourceImage;
+    if (!dragImage) return;
+    if (event.ctrlKey && imageMode === "move") {
+      rememberHistory();
+      setCopiedImages((current) => [...current, dragImage]);
+      objectClipboardRef.current = { kind: "image", item: dragImage };
+    }
     setSelectedTarget(undefined);
     setDeleteConfirmTarget(undefined);
-    setSelectedObject({ kind: "image", id: image.id });
+    setSelectedObject({ kind: "image", id: dragImage.id });
     dragRef.current = {
       pointerId: event.pointerId,
-      target: { kind: "image", id: image.id },
+      target: { kind: "image", id: dragImage.id },
       startClientX: event.clientX,
       startClientY: event.clientY,
-      origin: imageGeometryOverrides[image.id] || image,
+      origin: dragImage,
+      imageMode,
       moved: false,
-      historyCaptured: false
+      historyCaptured: event.ctrlKey && imageMode === "move"
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
@@ -591,24 +878,35 @@ export function PdfEditorWindowApp(): JSX.Element {
       }
       drag.moved = true;
       if (drag.target.kind === "line" && drag.lineOrigin) {
-        const nextLine = adjustLineGeometry(drag.lineOrigin, dx, dy, drag.lineMode || "move", pageSize);
+        const delta = event.shiftKey && (drag.lineMode || "move") === "move" ? constrainAxisDelta(dx, dy) : { dx, dy };
+        const nextLine = adjustLineGeometry(drag.lineOrigin, delta.dx, delta.dy, drag.lineMode || "move", pageSize);
         applyLineGeometry(drag.target.id, nextLine);
+        setDragGuide(createLineDragGuide(nextLine));
         return;
       }
+      if (drag.target.kind === "image" && drag.imageMode && drag.imageMode !== "move") {
+        const nextGeometry = resizeImageGeometry(drag.origin, dx, dy, drag.imageMode, pageSize, event.shiftKey);
+        applyGeometry(drag.target, nextGeometry);
+        setDragGuide(createBoxDragGuide(nextGeometry));
+        return;
+      }
+      const delta = event.shiftKey ? constrainAxisDelta(dx, dy) : { dx, dy };
       const nextGeometry = clampGeometry(
         {
           ...drag.origin,
-          x: drag.origin.x + dx,
-          y: drag.origin.y + dy
+          x: drag.origin.x + delta.dx,
+          y: drag.origin.y + delta.dy
         },
         pageSize
       );
       applyGeometry(drag.target, nextGeometry);
+      setDragGuide(createBoxDragGuide(nextGeometry));
     };
 
     const onPointerUp = (event: PointerEvent) => {
       if (dragRef.current?.pointerId === event.pointerId) {
         dragRef.current = undefined;
+        setDragGuide(undefined);
       }
     };
 
@@ -620,7 +918,7 @@ export function PdfEditorWindowApp(): JSX.Element {
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [additions, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, lineGeometryOverrides, pageSize, zoom]);
+  }, [additions, copiedImages, copiedLines, deletedIds, drafts, geometryOverrides, imageGeometryOverrides, lineGeometryOverrides, pageSize, zoom]);
 
   const applyGeometry = (target: DragTarget, geometry: PdfEditorBoxGeometry) => {
     if (target.kind === "text") {
@@ -628,6 +926,10 @@ export function PdfEditorWindowApp(): JSX.Element {
       return;
     }
     if (target.kind === "image") {
+      if (copiedImages.some((image) => image.id === target.id)) {
+        setCopiedImages((current) => current.map((image) => (image.id === target.id ? { ...image, ...geometry } : image)));
+        return;
+      }
       setImageGeometryOverrides((current) => {
         const source = current[target.id] || currentPageImages.find((image) => image.id === target.id);
         if (!source) return current;
@@ -645,10 +947,15 @@ export function PdfEditorWindowApp(): JSX.Element {
   };
 
   const applyLineGeometry = (id: string, geometry: PdfEditorGraphicLineItem) => {
+    if (copiedLines.some((line) => line.id === id)) {
+      setCopiedLines((current) => current.map((line) => (line.id === id ? geometry : line)));
+      return;
+    }
     setLineGeometryOverrides((current) => ({ ...current, [id]: geometry }));
   };
 
   const handleDraftPagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    updateLastPagePointer(event, selectedPage, zoom, lastPagePointerRef);
     if (!editMode || event.button !== 0 || event.target !== event.currentTarget || !pageSize) return;
 
     const hit = findTextHitAtPointer(
@@ -656,7 +963,8 @@ export function PdfEditorWindowApp(): JSX.Element {
       currentPageItems.filter((item) => !deletedIds.has(item.id)),
       geometryOverrides,
       drafts,
-      zoom
+      zoom,
+      visualTextBoxes
     );
 
     if (!hit) {
@@ -670,13 +978,15 @@ export function PdfEditorWindowApp(): JSX.Element {
   };
 
   const handleDraftPagePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    updateLastPagePointer(event, selectedPage, zoom, lastPagePointerRef);
     if (!editMode || event.target !== event.currentTarget || dragRef.current) return;
     const hit = findTextHitAtPointer(
       event,
       currentPageItems.filter((item) => !deletedIds.has(item.id)),
       geometryOverrides,
       drafts,
-      zoom
+      zoom,
+      visualTextBoxes
     );
     setHoveredTextId(hit?.item.id);
   };
@@ -748,7 +1058,7 @@ export function PdfEditorWindowApp(): JSX.Element {
       </div>
 
       {editMode && (
-        <div className="absolute left-1/2 top-[4.5rem] z-30 max-w-[720px] -translate-x-1/2 rounded-md border border-emerald-100 bg-white/95 px-3 py-2 text-xs leading-5 text-stone-700 shadow">
+        <div className="pdf-editor-floating-notice absolute left-1/2 top-[4.5rem] z-30 -translate-x-1/2 rounded-md border border-emerald-100 bg-white/95 px-3 py-2 text-xs leading-5 text-stone-700 shadow">
           Convert Smith는 가능한 경우 PDF 내부 텍스트 명령을 직접 수정합니다. 직접 수정이 어려운 PDF는 안전을 위해 저장을 제한합니다.
         </div>
       )}
@@ -763,13 +1073,19 @@ export function PdfEditorWindowApp(): JSX.Element {
       )}
 
       {error && (
-        <div className="absolute left-1/2 top-20 z-40 max-w-[680px] -translate-x-1/2 whitespace-pre-wrap rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-900 shadow-xl">
+        <div className="pdf-editor-floating-notice absolute left-1/2 top-20 z-40 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm leading-6 text-rose-900 shadow-xl">
           {error}
         </div>
       )}
 
-      {!error && layer?.warnings?.length ? (
-        <div className="absolute left-1/2 top-20 z-40 max-w-[680px] -translate-x-1/2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 shadow-xl">
+      {!error && notice ? (
+        <div className="pdf-editor-floating-notice absolute left-1/2 top-20 z-40 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 shadow-xl">
+          {notice}
+        </div>
+      ) : null}
+
+      {!error && !notice && layer?.warnings?.length ? (
+        <div className="pdf-editor-floating-notice absolute left-1/2 top-20 z-40 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 shadow-xl">
           <strong className="mb-1 block">제한 모드로 열었습니다.</strong>
           {layer.warnings.slice(0, 3).join("\n")}
         </div>
@@ -824,7 +1140,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                   onPointerMove={handleDraftPagePointerMove}
                   onPointerLeave={() => setHoveredTextId(undefined)}
                 >
-                  {currentPageLines.map((line) => {
+                  {currentPageLines.filter((line) => !deletedLineIds.has(line.id)).map((line) => {
                     const adjustedLine = lineGeometryOverrides[line.id] || line;
                     return (
                       <DraftLineBox
@@ -832,12 +1148,16 @@ export function PdfEditorWindowApp(): JSX.Element {
                         line={adjustedLine}
                         zoom={zoom}
                         selected={selectedObject?.kind === "line" && selectedObject.id === line.id}
+                        confirmDeleteOpen={deleteConfirmTarget?.kind === "line" && deleteConfirmTarget.id === line.id}
                         onSelect={() => {
                           setSelectedTarget(undefined);
                           setDeleteConfirmTarget(undefined);
                           setSelectedObject({ kind: "line", id: line.id });
                         }}
                         onStartDrag={(event) => startLineDrag(event, adjustedLine)}
+                        onRequestDelete={() => requestDelete({ kind: "line", id: line.id })}
+                        onConfirmDelete={confirmDelete}
+                        onCancelDelete={cancelDelete}
                       />
                     );
                   })}
@@ -857,6 +1177,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                           setSelectedObject({ kind: "image", id: image.id });
                         }}
                         onStartDrag={(event) => startImageDrag(event, adjustedImage)}
+                        onStartResize={(event, mode) => startImageDrag(event, adjustedImage, mode)}
                         onRequestDelete={() => requestDelete({ kind: "image", id: image.id })}
                         onConfirmDelete={confirmDelete}
                         onCancelDelete={cancelDelete}
@@ -878,6 +1199,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                         hovered={!selected && hoveredTextId === item.id}
                         deleted={false}
                         value={drafts[item.id] ?? item.text}
+                        visualGeometry={visualTextBoxes[item.id]}
                         changed={changed}
                         cloneMode={!selected}
                         confirmDeleteOpen={deleteConfirmTarget?.kind === "text" && deleteConfirmTarget.id === item.id}
@@ -907,6 +1229,7 @@ export function PdfEditorWindowApp(): JSX.Element {
                       onCancelDelete={cancelDelete}
                     />
                   ))}
+                  {dragGuide && <DragGuideOverlay guide={dragGuide} zoom={zoom} pageSize={pageSize} />}
                 </div>
               )}
 
@@ -1033,6 +1356,7 @@ function InlineEditableText({
   visible = true,
   textId,
   additionId,
+  editorStyle,
   onChange
 }: {
   value: string;
@@ -1047,6 +1371,7 @@ function InlineEditableText({
   visible?: boolean;
   textId?: string;
   additionId?: string;
+  editorStyle?: CSSProperties;
   onChange: (value: string) => void;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -1106,7 +1431,8 @@ function InlineEditableText({
         wordBreak: fitToWidth ? "keep-all" : "normal",
         ...(fitToWidth && targetWidth
           ? createFitTextStyle(value, fontSize, fontFamily, targetWidth, fontWeight, fontStyle)
-          : {})
+          : {}),
+        ...editorStyle
       }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
@@ -1132,6 +1458,7 @@ function TextOverlayBox({
   hovered,
   deleted,
   value,
+  visualGeometry,
   changed,
   cloneMode,
   confirmDeleteOpen,
@@ -1150,6 +1477,7 @@ function TextOverlayBox({
   hovered: boolean;
   deleted: boolean;
   value: string;
+  visualGeometry?: PdfEditorBoxGeometry;
   changed: boolean;
   cloneMode: boolean;
   confirmDeleteOpen: boolean;
@@ -1160,8 +1488,7 @@ function TextOverlayBox({
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
 }): JSX.Element {
-  const shouldExpandGeometry = changed;
-  const displayGeometry = shouldExpandGeometry
+  const displayGeometry = changed
     ? createTextDisplayGeometry(
         geometry,
         value,
@@ -1174,33 +1501,58 @@ function TextOverlayBox({
         item.width
       )
     : geometry;
-  const interactionGeometry = createTextHitGeometry(displayGeometry, item, value, zoom);
-  const interactionStyle = relativeBoxStyleExact(interactionGeometry, displayGeometry, zoom);
+  const visibleGeometry = !selected && cloneMode
+    ? expandGeometryForText(
+        displayGeometry,
+        value,
+        item.fontSize,
+        zoom,
+        item.fontFamily,
+        item.fontWeight,
+        item.fontStyle,
+        pageSize,
+        Math.max(item.width, displayGeometry.width)
+      )
+    : displayGeometry;
+  const interactionGeometry = !selected && visualGeometry
+    ? visualGeometry
+    : createTextHitGeometry(visibleGeometry, item, value, zoom);
+  const interactionStyle = relativeBoxStyleExact(interactionGeometry, visibleGeometry, zoom);
   const placeDeleteBubbleLeft = pageSize
     ? interactionGeometry.x + interactionGeometry.width + 180 > pageSize.width
     : false;
-  const rootInteractive = selected || !cloneMode;
+  const selectedGeometry = selected
+    ? createStableDraftTextGeometry(visibleGeometry, item, value, zoom, pageSize)
+    : visibleGeometry;
+  const selectedInteractionStyle = relativeBoxStyleExact(selectedGeometry, visibleGeometry, zoom);
   return (
     <div
-      onClick={rootInteractive ? onSelect : undefined}
-      onPointerDown={rootInteractive ? onStartDrag : undefined}
+      onClick={onSelect}
+      onPointerDown={onStartDrag}
       className={[
         "pdf-editor-field",
         cloneMode && !selected ? "pdf-editor-field--clone" : "",
         hovered ? "pdf-editor-field--hovered" : "",
         selected ? "pdf-editor-field--selected" : "",
+        selected ? "pdf-editor-field--text-selected-root" : "",
         deleted ? "pdf-editor-field--deleted" : "",
         changed && !selected ? "pdf-editor-field--changed" : ""
       ].join(" ")}
-      style={boxStyleExact(displayGeometry, zoom)}
+      style={boxStyleExact(visibleGeometry, zoom)}
       title={item.text}
     >
       {selected && !deleted && item.editCapability === "not_editable" ? (
-        <>
+        <span
+          className="pdf-editor-text-interaction-box pdf-editor-text-interaction-box--selected"
+          style={selectedInteractionStyle}
+        >
           <CapabilityBadge capability={item.editCapability} reason={item.editCapabilityReason} />
-        </>
+        </span>
       ) : selected && !deleted ? (
-        <>
+        <span
+          className="pdf-editor-text-interaction-box pdf-editor-text-interaction-box--selected"
+          style={selectedInteractionStyle}
+        >
           <InlineEditableText
             value={value}
             fontSize={item.fontSize * zoom}
@@ -1208,10 +1560,14 @@ function TextOverlayBox({
             fontWeight={item.fontWeight}
             fontStyle={item.fontStyle}
             color={item.color}
-            targetWidth={displayGeometry.width * zoom}
+            targetWidth={selectedGeometry.width * zoom}
             fitToWidth
             visible
             textId={item.id}
+            editorStyle={{
+              height: `${Math.max(1, selectedGeometry.height * zoom)}px`,
+              minHeight: `${Math.max(1, selectedGeometry.height * zoom)}px`
+            }}
             onChange={onChange}
           />
           <button
@@ -1237,11 +1593,12 @@ function TextOverlayBox({
             />
           )}
           <CapabilityBadge capability={item.editCapability} reason={item.editCapabilityReason} />
-        </>
+        </span>
       ) : cloneMode && !deleted ? (
         <>
           <div
             className="pdf-editor-field-text"
+            data-pdf-editor-visual-id={item.id}
             style={{
               color: item.color ? `#${item.color.replace(/^#/, "")}` : "#111827",
               fontFamily: createViewerFontStack(item.fontFamily, value),
@@ -1252,7 +1609,7 @@ function TextOverlayBox({
               whiteSpace: "pre",
               overflowWrap: "normal",
               wordBreak: "keep-all",
-              ...createFitTextStyle(value, item.fontSize * zoom, item.fontFamily, displayGeometry.width * zoom, item.fontWeight, item.fontStyle)
+              ...createFitTextStyle(value, item.fontSize * zoom, item.fontFamily, visibleGeometry.width * zoom, item.fontWeight, item.fontStyle)
             }}
           >
             {value}
@@ -1322,7 +1679,7 @@ function CapabilityBadge({
     <span
       data-no-drag
       className={[
-        "absolute -bottom-5 left-0 max-w-[220px] truncate rounded-sm border px-1.5 py-0.5 text-[10px] font-medium shadow-sm",
+        "pdf-editor-capability-badge rounded-sm border px-1.5 py-0.5 text-[10px] font-medium shadow-sm",
         meta.className
       ].join(" ")}
       title={meta.detail}
@@ -1374,6 +1731,7 @@ function DraftImageBox({
   confirmDeleteOpen,
   onSelect,
   onStartDrag,
+  onStartResize,
   onRequestDelete,
   onConfirmDelete,
   onCancelDelete
@@ -1384,6 +1742,7 @@ function DraftImageBox({
   confirmDeleteOpen: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
+  onStartResize: (event: ReactPointerEvent<HTMLElement>, mode: ImageResizeMode) => void;
   onRequestDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
@@ -1422,6 +1781,19 @@ function DraftImageBox({
           <Trash2 size={12} />
         </button>
       )}
+      {selected && (
+        <>
+          {IMAGE_RESIZE_HANDLES.map((handle) => (
+            <i
+              key={handle.mode}
+              className={`pdf-editor-image-resize-handle pdf-editor-image-resize-handle--${handle.mode}`}
+              style={{ cursor: handle.cursor }}
+              aria-hidden="true"
+              onPointerDown={(event) => onStartResize(event, handle.mode)}
+            />
+          ))}
+        </>
+      )}
       {selected && confirmDeleteOpen && (
         <DeleteConfirmBubble
           placement="left"
@@ -1437,14 +1809,22 @@ function DraftLineBox({
   line,
   zoom,
   selected,
+  confirmDeleteOpen,
   onSelect,
-  onStartDrag
+  onStartDrag,
+  onRequestDelete,
+  onConfirmDelete,
+  onCancelDelete
 }: {
   line: PdfEditorGraphicLineItem;
   zoom: number;
   selected: boolean;
+  confirmDeleteOpen: boolean;
   onSelect: () => void;
   onStartDrag: (event: ReactPointerEvent<HTMLElement>) => void;
+  onRequestDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
 }): JSX.Element {
   const hitGeometry = createLineHitGeometry(line);
   return (
@@ -1482,6 +1862,28 @@ function DraftLineBox({
             }}
             aria-hidden="true"
           />
+          <button
+            data-no-drag
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRequestDelete();
+            }}
+            className="pdf-editor-delete-trigger absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-sm border border-stone-300 bg-white text-stone-600 shadow"
+            aria-label="선 삭제"
+          >
+            <Trash2 size={12} />
+          </button>
+          {confirmDeleteOpen && (
+            <DeleteConfirmBubble
+              placement="left"
+              onConfirm={onConfirmDelete}
+              onCancel={onCancelDelete}
+            />
+          )}
         </>
       )}
     </button>
@@ -1750,6 +2152,63 @@ function boxStyleExact(geometry: PdfEditorBoxGeometry, zoom: number): CSSPropert
   };
 }
 
+function measureVisibleTextBox(
+  element: HTMLElement,
+  surfaceRect: DOMRect,
+  zoom: number
+): PdfEditorBoxGeometry | undefined {
+  const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  const rect = getElementTextRangeRect(element) || element.getBoundingClientRect();
+  if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+    return undefined;
+  }
+
+  return {
+    x: roundGeometryValue((rect.left - surfaceRect.left) / safeZoom),
+    y: roundGeometryValue((rect.top - surfaceRect.top) / safeZoom),
+    width: roundGeometryValue(rect.width / safeZoom),
+    height: roundGeometryValue(rect.height / safeZoom)
+  };
+}
+
+function getElementTextRangeRect(element: HTMLElement): DOMRect | undefined {
+  const selection = document.createRange();
+  try {
+    selection.selectNodeContents(element);
+    const rects = Array.from(selection.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+    if (rects.length === 0) return undefined;
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    return new DOMRect(left, top, right - left, bottom - top);
+  } finally {
+    selection.detach();
+  }
+}
+
+function areGeometryMapsEqual(
+  a: Record<string, PdfEditorBoxGeometry>,
+  b: Record<string, PdfEditorBoxGeometry>
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    return Boolean(right) &&
+      Math.abs(left.x - right.x) < 0.02 &&
+      Math.abs(left.y - right.y) < 0.02 &&
+      Math.abs(left.width - right.width) < 0.02 &&
+      Math.abs(left.height - right.height) < 0.02;
+  });
+}
+
+function roundGeometryValue(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
 function relativeBoxStyleExact(
   geometry: PdfEditorBoxGeometry,
   parentGeometry: PdfEditorBoxGeometry,
@@ -1769,7 +2228,8 @@ function findTextHitAtPointer(
   items: PdfEditorTextItem[],
   geometryOverrides: Record<string, PdfEditorBoxGeometry>,
   drafts: Record<string, string>,
-  zoom: number
+  zoom: number,
+  visualTextBoxes: Record<string, PdfEditorBoxGeometry> = {}
 ): { item: PdfEditorTextItem; geometry: PdfEditorBoxGeometry } | undefined {
   const rect = event.currentTarget.getBoundingClientRect();
   const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
@@ -1780,7 +2240,7 @@ function findTextHitAtPointer(
     .map((item) => {
       const geometry = geometryOverrides[item.id] || item;
       const value = drafts[item.id] ?? item.text;
-      const hitGeometry = createTextHitGeometry(geometry, item, value, safeZoom);
+      const hitGeometry = visualTextBoxes[item.id] || createTextHitGeometry(geometry, item, value, safeZoom);
       const padX = Math.max(1.25, item.fontSize * 0.12);
       const padY = Math.max(1.25, item.fontSize * 0.18);
       const inside =
@@ -1821,12 +2281,24 @@ function createTextHitGeometry(
     1,
     Math.min(geometry.width, Math.max(measuredWidth, item.fontSize * 0.45))
   );
-  const visualHeight = clampNumber(
+  const baseVisualHeight = clampNumber(
     Math.min(geometry.height, Math.max(1, item.fontSize * 1.05)),
     Math.max(1, item.fontSize * 0.5),
     Math.max(1, geometry.height)
   );
-  const yOffset = clampNumber((geometry.height - visualHeight) / 2, 0, Math.max(0, geometry.height - visualHeight));
+  const smallTextBias = clampNumber((12.5 - item.fontSize) / 7.5, 0, 1);
+  const lineBoxHeight = Math.max(1, item.fontSize * 1.12);
+  const visualHeight =
+    smallTextBias > 0
+      ? Math.max(baseVisualHeight, Math.min(lineBoxHeight, baseVisualHeight + item.fontSize * 0.8))
+      : baseVisualHeight;
+  const maxYOffset = Math.max(0, geometry.height - visualHeight);
+  const expandedBeyondGeometry = visualHeight > geometry.height;
+  const baselineYOffset = expandedBeyondGeometry ? 0 : smallTextBias * Math.max(0.7, item.fontSize * 0.36);
+  const maxSmallTextOverflow = expandedBeyondGeometry
+    ? 0
+    : Math.max(maxYOffset, smallTextBias * Math.max(1, item.fontSize * 0.55));
+  const yOffset = clampNumber((geometry.height - visualHeight) / 2 + baselineYOffset, 0, maxSmallTextOverflow);
 
   return {
     x: geometry.x,
@@ -1858,8 +2330,8 @@ function expandGeometryForText(
   const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
   const cssFontSize = Math.max(1, fontSize * safeZoom);
   const naturalWidth = measureViewerTextWidth(longestLine, cssFontSize, fontFamily, fontWeight, fontStyle) / safeZoom;
-  const padding = Math.max(1.5, fontSize * 0.18);
-  const targetWidth = Math.max(minimumWidth, geometry.width, naturalWidth + padding * 2);
+  const padding = Math.max(2.5, fontSize * 0.38);
+  const targetWidth = Math.max(minimumWidth, geometry.width, naturalWidth * 1.025 + padding * 2);
   const maxWidth = pageSize ? Math.max(1, pageSize.width - geometry.x) : targetWidth;
   return {
     ...geometry,
@@ -1884,6 +2356,37 @@ function createTextDisplayGeometry(
     fontSize,
     pageSize
   );
+}
+
+function createStableDraftTextGeometry(
+  geometry: PdfEditorBoxGeometry,
+  item: PdfEditorTextItem,
+  text: string,
+  zoom: number,
+  pageSize?: PdfEditorPageSize
+): PdfEditorBoxGeometry {
+  const expanded = expandGeometryForText(
+    geometry,
+    text,
+    item.fontSize,
+    zoom,
+    item.fontFamily,
+    item.fontWeight,
+    item.fontStyle,
+    pageSize,
+    Math.max(item.width, geometry.width)
+  );
+  const lineCount = getTextLineCount(text);
+  const wantedHeight = lineCount <= 1
+    ? Math.max(geometry.height, item.fontSize * 1.08)
+    : Math.max(geometry.height, item.fontSize * 1.12 * lineCount);
+  const maxHeight = pageSize ? Math.max(1, pageSize.height - geometry.y) : wantedHeight;
+
+  return {
+    ...geometry,
+    width: expanded.width,
+    height: Math.max(1, Math.min(wantedHeight, maxHeight))
+  };
 }
 
 function normalizeTextDisplayHeight(
@@ -2173,6 +2676,10 @@ function cloneImageGeometryOverrides(
   return Object.fromEntries(Object.entries(imageGeometryOverrides).map(([key, value]) => [key, { ...value }]));
 }
 
+function filterObjectMapByIds<T>(items: Record<string, T>, allowedIds: Set<string>): Record<string, T> {
+  return Object.fromEntries(Object.entries(items).filter(([key]) => allowedIds.has(key)));
+}
+
 function snapshotKey(snapshot: EditorHistorySnapshot): string {
   return JSON.stringify({
     drafts: snapshot.drafts,
@@ -2180,7 +2687,11 @@ function snapshotKey(snapshot: EditorHistorySnapshot): string {
     additions: snapshot.additions,
     geometryOverrides: snapshot.geometryOverrides,
     lineGeometryOverrides: snapshot.lineGeometryOverrides,
-    imageGeometryOverrides: snapshot.imageGeometryOverrides
+    imageGeometryOverrides: snapshot.imageGeometryOverrides,
+    deletedLineIds: [...snapshot.deletedLineIds].sort(),
+    deletedImageIds: [...snapshot.deletedImageIds].sort(),
+    copiedLines: snapshot.copiedLines,
+    copiedImages: snapshot.copiedImages
   });
 }
 
@@ -2198,4 +2709,131 @@ function clampGeometry(geometry: PdfEditorBoxGeometry, pageSize: PdfEditorPageSi
     x: Math.max(0, Math.min(pageSize.width - width, geometry.x)),
     y: Math.max(0, Math.min(pageSize.height - height, geometry.y))
   };
+}
+
+function constrainAxisDelta(dx: number, dy: number): { dx: number; dy: number } {
+  return Math.abs(dx) >= Math.abs(dy) ? { dx, dy: 0 } : { dx: 0, dy };
+}
+
+function resizeImageGeometry(
+  origin: PdfEditorBoxGeometry,
+  dx: number,
+  dy: number,
+  mode: ImageResizeMode,
+  pageSize: PdfEditorPageSize,
+  keepRatio: boolean
+): PdfEditorBoxGeometry {
+  const minSize = 6;
+  let left = origin.x;
+  let top = origin.y;
+  let right = origin.x + origin.width;
+  let bottom = origin.y + origin.height;
+
+  if (mode.includes("w")) left += dx;
+  if (mode.includes("e")) right += dx;
+  if (mode.includes("n")) top += dy;
+  if (mode.includes("s")) bottom += dy;
+
+  left = clampNumber(left, 0, pageSize.width - minSize);
+  top = clampNumber(top, 0, pageSize.height - minSize);
+  right = clampNumber(right, minSize, pageSize.width);
+  bottom = clampNumber(bottom, minSize, pageSize.height);
+
+  if (right - left < minSize) {
+    if (mode.includes("w")) left = right - minSize;
+    else right = left + minSize;
+  }
+  if (bottom - top < minSize) {
+    if (mode.includes("n")) top = bottom - minSize;
+    else bottom = top + minSize;
+  }
+
+  if (keepRatio && origin.width > 0 && origin.height > 0) {
+    const ratio = origin.width / origin.height;
+    let width = right - left;
+    let height = bottom - top;
+    if (width / height > ratio) width = height * ratio;
+    else height = width / ratio;
+
+    if (mode.includes("w")) left = right - width;
+    else right = left + width;
+    if (mode.includes("n")) top = bottom - height;
+    else bottom = top + height;
+
+    if (left < 0) {
+      const shift = -left;
+      left += shift;
+      right += shift;
+    }
+    if (right > pageSize.width) {
+      const shift = right - pageSize.width;
+      left -= shift;
+      right -= shift;
+    }
+    if (top < 0) {
+      const shift = -top;
+      top += shift;
+      bottom += shift;
+    }
+    if (bottom > pageSize.height) {
+      const shift = bottom - pageSize.height;
+      top -= shift;
+      bottom -= shift;
+    }
+  }
+
+  return clampGeometry({
+    ...origin,
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top
+  }, pageSize);
+}
+
+function createBoxDragGuide(geometry: PdfEditorBoxGeometry): DragGuideState {
+  return {
+    geometry,
+    label: `x ${Math.round(geometry.x)} / y ${Math.round(geometry.y)}`
+  };
+}
+
+function createLineDragGuide(line: PdfEditorGraphicLineItem): DragGuideState {
+  const geometry = createLineHitGeometry(line);
+  return {
+    geometry,
+    label: `x ${Math.round(geometry.x)} / y ${Math.round(geometry.y)}`
+  };
+}
+
+function updateLastPagePointer(
+  event: ReactPointerEvent<HTMLElement>,
+  pageNumber: number,
+  zoom: number,
+  targetRef: MutableRefObject<{ pageNumber: number; x: number; y: number } | undefined>
+): void {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  targetRef.current = {
+    pageNumber,
+    x: Math.max(0, (event.clientX - rect.left) / safeZoom),
+    y: Math.max(0, (event.clientY - rect.top) / safeZoom)
+  };
+}
+
+function DragGuideOverlay({
+  guide,
+  zoom,
+  pageSize
+}: {
+  guide: DragGuideState;
+  zoom: number;
+  pageSize: PdfEditorPageSize;
+}): JSX.Element {
+  const geometry = clampGeometry(guide.geometry, pageSize);
+  return (
+    <div className="pdf-editor-drag-guide" style={boxStyleExact(geometry, zoom)} aria-hidden="true">
+      <span>{guide.label}</span>
+    </div>
+  );
 }

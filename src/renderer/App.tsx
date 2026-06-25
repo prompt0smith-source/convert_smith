@@ -26,6 +26,7 @@ import type {
   ConvertMode,
   DependencyStatus,
   FileItem,
+  GifResolution,
   PdfRotation,
   PdfSignatureStampOptions,
   PdfSplitGroup,
@@ -53,6 +54,7 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   pdfRenderScale: 2,
   pdfPageSize: "auto",
   pdfToDocxMode: "visual_preservation",
+  gifResolution: "480",
   videoCompatibilityMode: true,
   overwritePolicy: "increment",
   sortMode: "basic",
@@ -142,6 +144,7 @@ type CompactTask =
   | "pdf_split_all"
   | "images_to_pdf"
   | "pdf_to_images"
+  | "video_to_gif"
   | "video_compatibility_repair"
   | "image_optimize"
   | "doc_to_pdf";
@@ -156,6 +159,7 @@ const COMPACT_TASK_OPTIONS: CompactTaskOption[] = [
   { value: "pdf_split_all", label: "PDF 분할" },
   { value: "images_to_pdf", label: "이미지 PDF" },
   { value: "pdf_to_images", label: "PDF 이미지" },
+  { value: "video_to_gif", label: "영상 GIF" },
   { value: "video_compatibility_repair", label: "호환 MP4" },
   { value: "image_optimize", label: "이미지 최적화" },
   { value: "doc_to_pdf", label: "문서 PDF" }
@@ -165,6 +169,7 @@ const QUICK_CONVERSION_PRESETS: QuickConversionPreset[] = [
   { label: "문서를 PDF로", preferredTypes: ["docx_to_pdf", "xlsx_to_pdf", "pptx_to_pdf"] },
   { label: "이미지를 PDF로", preferredTypes: ["images_to_pdf"] },
   { label: "PDF를 이미지로", preferredTypes: ["pdf_to_images"] },
+  { label: "영상을 GIF로", preferredTypes: ["video_to_gif"] },
   { label: "동영상을 호환 MP4로", preferredTypes: ["video_compatibility_repair", "mov_to_mp4", "webm_to_mp4", "mkv_to_mp4"] },
   { label: "이미지를 가볍게", preferredTypes: ["jpg_optimize", "png_optimize", "webp_optimize", "image_to_webp"] }
 ];
@@ -178,11 +183,20 @@ const LIBRE_OFFICE_CONVERSIONS = new Set<ConversionType>([
 
 const VIDEO_ESTIMATE_CONVERSIONS = new Set<ConversionType>([
   "mp4_to_mp3",
+  "video_to_gif",
   "mov_to_mp4",
   "webm_to_mp4",
   "mkv_to_mp4",
   "video_compatibility_repair"
 ]);
+
+const GIF_RESOLUTION_OPTIONS: Array<{ value: GifResolution; label: string }> = [
+  { value: "source", label: "원본" },
+  { value: "720", label: "720p" },
+  { value: "480", label: "480p" },
+  { value: "360", label: "360p" },
+  { value: "240", label: "240p" }
+];
 
 export function App(): JSX.Element {
   const rememberedOutputDir = localStorage.getItem(OUTPUT_DIR_STORAGE_KEY) || undefined;
@@ -2451,6 +2465,22 @@ function CompactOptionsPanel({
               onChange={(event) => update({ imageQuality: Number(event.target.value) })}
               className="mt-1 w-full accent-emerald-700"
             />
+          </label>
+        )}
+        {selectedConversion === "video_to_gif" && (
+          <label className="block">
+            GIF 해상도
+            <select
+              value={options.gifResolution}
+              onChange={(event) => update({ gifResolution: event.target.value as GifResolution })}
+              className="mt-1 h-7 w-full rounded border border-stone-300 bg-white px-2 text-[11px]"
+            >
+              {GIF_RESOLUTION_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
           </label>
         )}
       </div>

@@ -69,8 +69,11 @@ export function formatUnsupportedReason(reason?: string): string {
   const map: Record<string, string> = {
     native_span_not_found: "PDF 내부 텍스트 명령을 다시 찾지 못했습니다.",
     native_span_not_mapped: "PDF 내부 텍스트 명령과 안전하게 연결되지 않았습니다.",
+    native_span_group_not_found: "여러 조각으로 나뉜 PDF 내부 텍스트 명령을 다시 찾지 못했습니다.",
+    multi_span_group_complex: "여러 조각으로 나뉜 텍스트 명령 중 직접 비우기 어려운 항목이 있습니다.",
+    multi_span_text_group: "PDF 내부에서 여러 텍스트 명령으로 나뉜 항목입니다.",
     complex_text_operator: "PDF 내부 텍스트 명령 구조가 복잡합니다.",
-    multiline_replacement_not_supported: "한 줄 텍스트를 여러 줄로 바꾸는 저장은 아직 제한됩니다.",
+    multiline_replacement_not_supported: "여러 줄 텍스트로 바꾸는 저장은 아직 제한됩니다.",
     multiline_addition_not_supported: "여러 줄 추가 텍스트 저장은 아직 제한됩니다.",
     empty_addition: "추가 텍스트가 비어 있습니다.",
     image_or_line_native_patch_not_supported: "이미지/선 객체의 직접 저장 편집은 아직 제한되어 있습니다.",

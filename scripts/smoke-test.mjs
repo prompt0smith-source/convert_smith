@@ -381,6 +381,17 @@ const mp3Job = await service.convert(
 );
 assertSuccess("MP4 -> MP3", mp3Job);
 
+const gifJob = await service.convert(
+  {
+    sourcePaths: [mp4Input],
+    outputDir: root,
+    conversionType: "video_to_gif",
+    options: { ...options, gifResolution: "240" }
+  },
+  () => undefined
+);
+assertSuccess("Video -> GIF", gifJob);
+
 const webmInput = path.join(root, "sample.webm");
 await run(ffmpegPath, [
   "-y",
@@ -420,6 +431,7 @@ console.log(`PDF merge: ${mergeJob.outputPaths[0]}`);
 console.log(`PDF split files: ${splitJob.outputPaths.length}`);
 console.log(`PDF signature stamp: ${signatureJob.outputPaths[0]}`);
 console.log(`MP4 -> MP3: ${mp3Job.outputPaths[0]}`);
+console.log(`Video -> GIF: ${gifJob.outputPaths[0]}`);
 console.log(`WEBM -> MP4: ${webmJob.outputPaths[0]}`);
 
 async function assertSuccess(label, job) {

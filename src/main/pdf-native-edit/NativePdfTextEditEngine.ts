@@ -21,6 +21,13 @@ export interface PdfNativeTextEditResult {
   planItems: PdfEditPlanItem[];
 }
 
+interface PdfNativeTextGroupPlanItem {
+  edit: PdfEditorEdit;
+  spans: PdfNativeTextSpan[];
+  mode: "delete_original" | "neutralize_and_insert" | "unsupported";
+  reason?: string;
+}
+
 export class NativePdfTextEditEngine {
   private readonly scanner = new PdfTextOperatorScanner();
   private readonly planner = new PdfEditPlanService();
@@ -32,12 +39,20 @@ export class NativePdfTextEditEngine {
 
   applyTextEdits(pdfDoc: PDFDocument, edits: PdfEditorEdit[]): PdfNativeTextEditResult {
     const scan = this.scanner.scanDocument(pdfDoc);
-    const plan = this.planner.createPlan(edits, scan.spans);
+    const groupPlan = this.createGroupEditPlan(edits, scan.spans);
+    const groupedEditSet = new Set([
+      ...groupPlan.items.map((item) => item.edit),
+      ...groupPlan.unsupported.map((item) => item.edit)
+    ]);
+    const normalEdits = edits.filter((edit) => !groupedEditSet.has(edit));
+    const plan = this.planner.createPlan(normalEdits, scan.spans);
 
-    if (plan.unsupported.length > 0) {
-      throw new Error(createUnsupportedEditMessage(plan.unsupported));
+    const unsupported = [...groupPlan.unsupported, ...plan.unsupported];
+    if (unsupported.length > 0) {
+      throw new Error(createUnsupportedEditMessage(unsupported));
     }
 
+    const groupPlanItems = groupPlan.items.map(toEditPlanItem);
     const streamStateByKey = new Map(scan.streamStates.map((state) => [`${state.pageNumber}:${state.streamIndex}`, state]));
     const result: PdfNativeTextEditResult = {
       replacedCount: 0,
@@ -46,8 +61,29 @@ export class NativePdfTextEditEngine {
       neutralizedCount: 0,
       insertions: [],
       warnings: [],
-      planItems: plan.items
+      planItems: [...groupPlanItems, ...plan.items]
     };
+
+    for (const item of groupPlan.items) {
+      if (item.mode === "unsupported") continue;
+      for (const span of item.spans) {
+        const state = streamStateByKey.get(`${span.pageNumber}:${span.streamIndex}`);
+        if (!state) throw new Error("PDF 내부 텍스트 stream을 다시 찾지 못했습니다.");
+        state.patches.push(this.scanner.createReplacementPatch(span, ""));
+      }
+
+      if (item.mode === "delete_original") {
+        result.deletedCount += 1;
+        continue;
+      }
+
+      result.neutralizedCount += 1;
+      result.insertions.push({
+        edit: { ...item.edit, saveMode: "neutralize_and_insert" },
+        mode: "neutralize_and_insert",
+        reason: item.reason
+      });
+    }
 
     for (const item of plan.items) {
       if (item.mode === "add_text") {
@@ -91,6 +127,50 @@ export class NativePdfTextEditEngine {
     }
     return result;
   }
+
+  private createGroupEditPlan(
+    edits: PdfEditorEdit[],
+    spans: PdfNativeTextSpan[]
+  ): { items: PdfNativeTextGroupPlanItem[]; unsupported: PdfEditPlanItem[] } {
+    const spansById = new Map(spans.map((span) => [span.id, span]));
+    const items: PdfNativeTextGroupPlanItem[] = [];
+    const unsupported: PdfEditPlanItem[] = [];
+
+    for (const edit of edits) {
+      const ids = parseNativeSpanGroupIds(edit.nativeSpanId);
+      if (!ids) continue;
+
+      const groupSpans = ids.map((id) => spansById.get(id)).filter((span): span is PdfNativeTextSpan => Boolean(span));
+      if (groupSpans.length !== ids.length) {
+        unsupported.push({ edit, mode: "unsupported", reason: "native_span_group_not_found" });
+        continue;
+      }
+      if (groupSpans.some((span) => !span.simplePatchable)) {
+        unsupported.push({ edit, mode: "unsupported", reason: "multi_span_group_complex" });
+        continue;
+      }
+
+      if (edit.action === "delete" || !(edit.replacementText || "").normalize("NFC")) {
+        items.push({ edit, spans: groupSpans, mode: "delete_original" });
+        continue;
+      }
+
+      const replacement = (edit.replacementText || "").normalize("NFC");
+      if (/\r|\n/.test(replacement)) {
+        unsupported.push({ edit, mode: "unsupported", reason: "multiline_replacement_not_supported" });
+        continue;
+      }
+
+      items.push({
+        edit,
+        spans: groupSpans,
+        mode: "neutralize_and_insert",
+        reason: "multi_span_text_group"
+      });
+    }
+
+    return { items, unsupported };
+  }
 }
 
 function createUnsupportedEditMessage(items: PdfEditPlanItem[]): string {
@@ -113,4 +193,23 @@ function createUnsupportedEditMessage(items: PdfEditPlanItem[]): string {
 function summarizeEdit(edit: PdfEditorEdit): string {
   const text = (edit.replacementText || edit.originalText || edit.action).replace(/\s+/g, " ").trim();
   return text.length > 24 ? `${text.slice(0, 24)}...` : text || edit.action;
+}
+
+function toEditPlanItem(item: PdfNativeTextGroupPlanItem): PdfEditPlanItem {
+  return {
+    edit: item.edit,
+    mode: item.mode,
+    span: item.spans[0],
+    reason: item.reason
+  };
+}
+
+function parseNativeSpanGroupIds(nativeSpanId: string | undefined): string[] | undefined {
+  if (!nativeSpanId?.startsWith("group:")) return undefined;
+  const ids = nativeSpanId
+    .slice("group:".length)
+    .split("|")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  return ids.length > 1 ? ids : undefined;
 }

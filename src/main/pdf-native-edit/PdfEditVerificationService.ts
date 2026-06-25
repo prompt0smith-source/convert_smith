@@ -26,7 +26,7 @@ export class PdfEditVerificationService {
       return {
         ok: false,
         warnings,
-        message: "PDF 편집 결과에서 시각적으로 덮어쓰기 의심 명령이 발견되어 저장을 중단했습니다."
+        message: "PDF 편집 결과에서 시각적으로 덮어쓰기 위한 흰 사각형 명령이 발견되어 저장을 중단했습니다."
       };
     }
 

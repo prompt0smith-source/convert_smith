@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
-import type { VideoInspection } from "../types/conversion.js";
+import type { GifResolution, VideoInspection } from "../types/conversion.js";
 
 type ProgressCallback = (progress: number, message: string) => void;
 
@@ -127,6 +127,28 @@ export class FfmpegEngine {
     );
   }
 
+  async convertVideoToGif(
+    inputPath: string,
+    outputPath: string,
+    resolution: GifResolution,
+    onProgress: ProgressCallback,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const inspection = await this.inspect(inputPath);
+    if (!inspection.hasVideo) {
+      throw new Error("GIF로 변환하려면 비디오 트랙이 필요합니다.");
+    }
+
+    const scaleFilter = this.createGifScaleFilter(resolution);
+    const filter = `fps=12,scale=${scaleFilter}:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5`;
+    await this.runFfmpeg(
+      ["-y", "-i", inputPath, "-an", "-filter_complex", filter, "-loop", "0", outputPath],
+      inspection.durationSeconds,
+      onProgress,
+      signal
+    );
+  }
+
   async probe(filePath: string): Promise<FfprobeOutput> {
     const stdout = await this.runProcess(this.ffprobePath, [
       "-v",
@@ -223,5 +245,12 @@ export class FfmpegEngine {
     if (!match) return undefined;
     const [, hours, minutes, seconds] = match;
     return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+  }
+
+  private createGifScaleFilter(resolution: GifResolution): string {
+    if (resolution === "source") {
+      return "trunc(iw/2)*2:trunc(ih/2)*2";
+    }
+    return `-2:${resolution}`;
   }
 }

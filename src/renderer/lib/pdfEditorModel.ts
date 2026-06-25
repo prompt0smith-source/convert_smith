@@ -52,7 +52,11 @@ export function countPdfEditorChanges(
   additions: PendingPdfEditorAddition[],
   geometryOverrides: Record<string, PdfEditorBoxGeometry> = {},
   lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem> = {},
-  imageGeometryOverrides: Record<string, PdfEditorImageItem> = {}
+  imageGeometryOverrides: Record<string, PdfEditorImageItem> = {},
+  deletedLineIds: Set<string> = new Set(),
+  deletedImageIds: Set<string> = new Set(),
+  copiedLines: PdfEditorGraphicLineItem[] = [],
+  copiedImages: PdfEditorImageItem[] = []
 ): number {
   const edited = items.filter(
     (item) =>
@@ -61,7 +65,16 @@ export function countPdfEditorChanges(
       hasGeometryOverride(item, geometryOverrides[item.id])
   ).length;
   const added = additions.filter((item) => item.text.trim()).length;
-  return edited + added + Object.keys(lineGeometryOverrides).length + Object.keys(imageGeometryOverrides).length;
+  return (
+    edited +
+    added +
+    Object.keys(lineGeometryOverrides).length +
+    Object.keys(imageGeometryOverrides).length +
+    deletedLineIds.size +
+    deletedImageIds.size +
+    copiedLines.length +
+    copiedImages.length
+  );
 }
 
 export function buildPdfEditorEdits(
@@ -73,7 +86,11 @@ export function buildPdfEditorEdits(
   sourceLines: PdfEditorGraphicLineItem[] = [],
   lineGeometryOverrides: Record<string, PdfEditorGraphicLineItem> = {},
   sourceImages: PdfEditorImageItem[] = [],
-  imageGeometryOverrides: Record<string, PdfEditorImageItem> = {}
+  imageGeometryOverrides: Record<string, PdfEditorImageItem> = {},
+  deletedLineIds: Set<string> = new Set(),
+  deletedImageIds: Set<string> = new Set(),
+  copiedLines: PdfEditorGraphicLineItem[] = [],
+  copiedImages: PdfEditorImageItem[] = []
 ): PdfEditorEdit[] {
   const edits: PdfEditorEdit[] = [];
   for (const item of items) {
@@ -160,11 +177,13 @@ export function buildPdfEditorEdits(
 
   for (const [lineId, adjusted] of Object.entries(lineGeometryOverrides)) {
     const original = sourceLines.find((line) => line.id === lineId);
-    if (!original || !hasLineGeometryOverride(original, adjusted)) continue;
+    if (!original || deletedLineIds.has(lineId) || !hasLineGeometryOverride(original, adjusted)) continue;
     const cover = createLineCoverGeometry(original);
     edits.push({
       action: "line",
       pageNumber: original.pageNumber,
+      nativeObjectId: original.nativeObjectId,
+      objectEditMode: "move",
       saveMode: "unsupported",
       coverX: cover.x,
       coverY: cover.y,
@@ -185,12 +204,43 @@ export function buildPdfEditorEdits(
     });
   }
 
+  for (const lineId of deletedLineIds) {
+    const original = sourceLines.find((line) => line.id === lineId);
+    if (!original) continue;
+    const cover = createLineCoverGeometry(original);
+    edits.push({
+      action: "line",
+      pageNumber: original.pageNumber,
+      nativeObjectId: original.nativeObjectId,
+      objectEditMode: "delete",
+      saveMode: "unsupported",
+      coverX: cover.x,
+      coverY: cover.y,
+      coverWidth: cover.width,
+      coverHeight: cover.height,
+      x: original.x,
+      y: original.y,
+      width: original.width,
+      height: original.height,
+      fontSize: 10,
+      x1: original.x1,
+      y1: original.y1,
+      x2: original.x2,
+      y2: original.y2,
+      strokeWidth: original.strokeWidth,
+      dashArray: original.dashArray,
+      dashPhase: original.dashPhase
+    });
+  }
+
   for (const [imageId, adjusted] of Object.entries(imageGeometryOverrides)) {
     const original = sourceImages.find((image) => image.id === imageId);
     if (!original || !original.imageDataBase64 || !hasGeometryOverride(original, adjusted)) continue;
     edits.push({
       action: "image",
       pageNumber: original.pageNumber,
+      nativeObjectId: original.nativeObjectId,
+      objectEditMode: "move",
       saveMode: "unsupported",
       coverX: original.x,
       coverY: original.y,
@@ -203,6 +253,70 @@ export function buildPdfEditorEdits(
       fontSize: 10,
       imageDataBase64: original.imageDataBase64,
       mimeType: original.mimeType || "image/png"
+    });
+  }
+
+  for (const imageId of deletedImageIds) {
+    const original = sourceImages.find((image) => image.id === imageId);
+    if (!original) continue;
+    edits.push({
+      action: "image",
+      pageNumber: original.pageNumber,
+      nativeObjectId: original.nativeObjectId,
+      objectEditMode: "delete",
+      saveMode: "unsupported",
+      coverX: original.x,
+      coverY: original.y,
+      coverWidth: original.width,
+      coverHeight: original.height,
+      x: original.x,
+      y: original.y,
+      width: original.width,
+      height: original.height,
+      fontSize: 10,
+      imageDataBase64: original.imageDataBase64,
+      mimeType: original.mimeType || "image/png"
+    });
+  }
+
+  for (const line of copiedLines) {
+    edits.push({
+      action: "line",
+      pageNumber: line.pageNumber,
+      nativeObjectId: line.nativeObjectId || line.sourceObjectId,
+      sourceObjectId: line.sourceObjectId,
+      objectEditMode: "duplicate",
+      saveMode: "unsupported",
+      x: line.x,
+      y: line.y,
+      width: line.width,
+      height: line.height,
+      fontSize: 10,
+      x1: line.x1,
+      y1: line.y1,
+      x2: line.x2,
+      y2: line.y2,
+      strokeWidth: line.strokeWidth,
+      dashArray: line.dashArray,
+      dashPhase: line.dashPhase
+    });
+  }
+
+  for (const image of copiedImages) {
+    edits.push({
+      action: "image",
+      pageNumber: image.pageNumber,
+      nativeObjectId: image.nativeObjectId || image.sourceObjectId,
+      sourceObjectId: image.sourceObjectId,
+      objectEditMode: "duplicate",
+      saveMode: "unsupported",
+      x: image.x,
+      y: image.y,
+      width: image.width,
+      height: image.height,
+      fontSize: 10,
+      imageDataBase64: image.imageDataBase64,
+      mimeType: image.mimeType || "image/png"
     });
   }
 

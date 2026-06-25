@@ -14,6 +14,7 @@ interface PendingImagePlacement {
   matrix: number[];
   width?: number;
   height?: number;
+  inlineIndex?: number;
 }
 
 export async function extractPdfPlacedImages(
@@ -62,29 +63,67 @@ export async function extractPdfPlacedImages(
         id: `inline_${index}`,
         matrix: [...currentMatrix],
         width: Number(args[0].width) || undefined,
-        height: Number(args[0].height) || undefined
+        height: Number(args[0].height) || undefined,
+        inlineIndex: index
       });
+      continue;
+    }
+    if (fn === ops.paintImageMaskXObject && args?.[0]) {
+      placements.push({
+        id: `mask_${index}`,
+        matrix: [...currentMatrix],
+        width: Number(args[0].width) || undefined,
+        height: Number(args[0].height) || undefined,
+        inlineIndex: index
+      });
+      continue;
+    }
+    if (
+      fn === ops.paintImageXObjectRepeat &&
+      Array.isArray(args) &&
+      typeof args[0] === "string" &&
+      Array.isArray(args[3])
+    ) {
+      for (let positionIndex = 0; positionIndex < args[3].length; positionIndex += 2) {
+        placements.push({
+          id: args[0],
+          matrix: pdfjs.Util.transform(currentMatrix, [
+            Number(args[1]) || 1,
+            0,
+            0,
+            Number(args[2]) || 1,
+            Number(args[3][positionIndex]) || 0,
+            Number(args[3][positionIndex + 1]) || 0
+          ]),
+          width: undefined,
+          height: undefined
+        });
+      }
     }
   }
 
   const images: PdfPlacedImage[] = [];
   for (const placement of placements) {
-    const image =
-      placement.id.startsWith("inline_") && operatorList.argsArray[Number(placement.id.slice(7))]?.[0]
-        ? operatorList.argsArray[Number(placement.id.slice(7))][0]
-        : await getPageImageObject(page, placement.id);
-    if (!image?.data || !image.width || !image.height) continue;
+    try {
+      const image =
+        placement.inlineIndex !== undefined && operatorList.argsArray[placement.inlineIndex]?.[0]
+          ? operatorList.argsArray[placement.inlineIndex][0]
+          : await getPageImageObject(page, placement.id);
+      if (!image?.data || !image.width || !image.height) continue;
 
-    const data = await encodePdfImageAsPng(image, pdfjs);
-    if (!data) continue;
-    const box = getViewportBox(pdfjs, viewport, placement.matrix, layoutScale);
-    if (box.width < 1 || box.height < 1) continue;
+      const data = await encodePdfImageAsPng(image, pdfjs);
+      if (!data) continue;
+      const box = getViewportBox(pdfjs, viewport, placement.matrix, layoutScale);
+      if (box.width < 1 || box.height < 1) continue;
 
-    images.push({
-      id: placement.id,
-      data,
-      ...box
-    });
+      images.push({
+        id: placement.id,
+        data,
+        ...box
+      });
+    } catch {
+      continue;
+    }
   }
 
   return images;
@@ -101,10 +140,12 @@ function getPageImageObject(page: any, id: string): Promise<any> {
 }
 
 async function encodePdfImageAsPng(image: any, pdfjs: any): Promise<Buffer | undefined> {
-  const channels = getImageChannels(image, pdfjs);
+  const normalized = normalizePdfImageData(image, pdfjs);
+  if (!normalized) return undefined;
+  const { data, channels } = normalized;
   if (!channels) return undefined;
 
-  return sharp(Buffer.from(image.data), {
+  return sharp(data, {
     raw: {
       width: image.width,
       height: image.height,
@@ -115,16 +156,41 @@ async function encodePdfImageAsPng(image: any, pdfjs: any): Promise<Buffer | und
     .toBuffer();
 }
 
-function getImageChannels(image: any, pdfjs: any): 1 | 3 | 4 | undefined {
-  if (image.kind === pdfjs.ImageKind.RGBA_32BPP) return 4;
-  if (image.kind === pdfjs.ImageKind.RGB_24BPP) return 3;
+function normalizePdfImageData(image: any, pdfjs: any): { data: Buffer; channels: 1 | 3 | 4 } | undefined {
+  const width = Number(image.width);
+  const height = Number(image.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return undefined;
+  const source = Buffer.from(image.data || []);
+  const pixelCount = width * height;
+  if (image.kind === pdfjs.ImageKind.RGBA_32BPP && source.length >= pixelCount * 4) {
+    return { data: source.subarray(0, pixelCount * 4), channels: 4 };
+  }
+  if (image.kind === pdfjs.ImageKind.RGB_24BPP && source.length >= pixelCount * 3) {
+    return { data: source.subarray(0, pixelCount * 3), channels: 3 };
+  }
+  if (image.kind === pdfjs.ImageKind.GRAYSCALE_1BPP) {
+    return { data: unpackOneBitGrayImage(source, width, height), channels: 1 };
+  }
 
-  const pixelCount = Number(image.width) * Number(image.height);
-  const dataLength = Number(image.data?.length) || 0;
-  if (dataLength === pixelCount * 4) return 4;
-  if (dataLength === pixelCount * 3) return 3;
-  if (dataLength === pixelCount) return 1;
+  if (source.length >= pixelCount * 4) return { data: source.subarray(0, pixelCount * 4), channels: 4 };
+  if (source.length >= pixelCount * 3) return { data: source.subarray(0, pixelCount * 3), channels: 3 };
+  if (source.length >= pixelCount) return { data: source.subarray(0, pixelCount), channels: 1 };
+  if (source.length >= Math.ceil(pixelCount / 8)) return { data: unpackOneBitGrayImage(source, width, height), channels: 1 };
   return undefined;
+}
+
+function unpackOneBitGrayImage(source: Buffer, width: number, height: number): Buffer {
+  const output = Buffer.alloc(width * height);
+  const rowStride = Math.ceil(width / 8);
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * rowStride;
+    for (let x = 0; x < width; x += 1) {
+      const byte = source[rowOffset + Math.floor(x / 8)] || 0;
+      const bit = (byte >> (7 - (x % 8))) & 1;
+      output[y * width + x] = bit ? 255 : 0;
+    }
+  }
+  return output;
 }
 
 function getViewportBox(

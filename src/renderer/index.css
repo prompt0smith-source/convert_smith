@@ -310,6 +310,8 @@ body.convert-smith-grabbing * {
   cursor: grab;
   border: 1px solid transparent;
   background: transparent;
+  font-size: 0;
+  line-height: 0;
   transition:
     border-color 120ms ease,
     background-color 120ms ease,
@@ -340,7 +342,7 @@ body.convert-smith-grabbing * {
 }
 
 .pdf-editor-field--clone {
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .pdf-editor-field--clone .pdf-editor-field-text {
@@ -357,6 +359,12 @@ body.convert-smith-grabbing * {
   box-shadow:
     0 0 0 2px rgba(16, 185, 129, 0.16),
     0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.pdf-editor-field--text-selected-root.pdf-editor-field--selected {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .pdf-editor-field--deleted,
@@ -467,6 +475,77 @@ body.convert-smith-grabbing * {
   box-shadow:
     0 0 0 2px rgba(124, 58, 237, 0.16),
     0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.pdf-editor-image-resize-handle {
+  position: absolute;
+  z-index: 8;
+  display: block;
+  width: 8px;
+  height: 8px;
+  border: 1px solid #111827;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.22);
+  pointer-events: auto;
+}
+
+.pdf-editor-image-resize-handle--n,
+.pdf-editor-image-resize-handle--s {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.pdf-editor-image-resize-handle--e,
+.pdf-editor-image-resize-handle--w {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.pdf-editor-image-resize-handle--n,
+.pdf-editor-image-resize-handle--ne,
+.pdf-editor-image-resize-handle--nw {
+  top: -5px;
+}
+
+.pdf-editor-image-resize-handle--s,
+.pdf-editor-image-resize-handle--se,
+.pdf-editor-image-resize-handle--sw {
+  bottom: -5px;
+}
+
+.pdf-editor-image-resize-handle--e,
+.pdf-editor-image-resize-handle--ne,
+.pdf-editor-image-resize-handle--se {
+  right: -5px;
+}
+
+.pdf-editor-image-resize-handle--w,
+.pdf-editor-image-resize-handle--nw,
+.pdf-editor-image-resize-handle--sw {
+  left: -5px;
+}
+
+.pdf-editor-drag-guide {
+  position: absolute;
+  z-index: 20;
+  border: 1px dashed rgba(5, 150, 105, 0.94);
+  background: rgba(16, 185, 129, 0.05);
+  pointer-events: none;
+}
+
+.pdf-editor-drag-guide span {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 3px);
+  display: inline-flex;
+  white-space: nowrap;
+  border-radius: 3px;
+  background: rgba(6, 95, 70, 0.94);
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffffff;
 }
 
 .pdf-editor-draft-image-fallback {
@@ -628,12 +707,12 @@ body.convert-smith-grabbing * {
 }
 
 .pdf-editor-field-text {
-  display: inline-block;
+  display: block;
   position: relative;
   z-index: 3;
   height: 100%;
   width: 100%;
-  overflow: hidden;
+  overflow: visible;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: normal;
@@ -644,9 +723,11 @@ body.convert-smith-grabbing * {
 
 .pdf-editor-text-interaction-box {
   z-index: 4;
+  display: block;
   overflow: visible;
   border: 1px solid transparent;
   background: transparent;
+  line-height: 0;
   transition:
     border-color 120ms ease,
     background-color 120ms ease,
@@ -687,13 +768,13 @@ body.convert-smith-grabbing * {
 .pdf-editor-inline-editor {
   position: relative;
   z-index: 6;
-  display: inline-block;
+  display: block;
   width: 100%;
   min-width: 0;
   max-width: 100%;
   height: 100%;
   min-height: 100%;
-  overflow: hidden auto;
+  overflow: visible;
   padding: 0;
   border: 0;
   outline: 0;
@@ -722,6 +803,20 @@ body.convert-smith-grabbing * {
 .pdf-editor-inline-editor:empty::before {
   content: attr(data-placeholder);
   color: rgba(120, 113, 108, 0.72);
+}
+
+.pdf-editor-capability-badge {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 12;
+  width: max-content;
+  min-width: max-content;
+  max-width: min(260px, calc(100vw - 48px));
+  overflow: visible;
+  white-space: nowrap;
+  line-height: 1.2;
+  pointer-events: none;
 }
 
 .pdf-editor-delete-trigger {
@@ -807,6 +902,14 @@ body.convert-smith-grabbing * {
 
 .pdf-editor-delete-bubble-actions button:active {
   transform: translateY(1px);
+}
+
+.pdf-editor-floating-notice {
+  width: min(720px, calc(100vw - 96px));
+  max-height: min(180px, calc(100vh - 128px));
+  overflow: auto;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .pdf-editor-field-label {

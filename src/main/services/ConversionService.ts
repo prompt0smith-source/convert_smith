@@ -39,6 +39,7 @@ const DEFAULT_OPTIONS: ConversionOptions = {
   pdfRenderScale: 2,
   pdfPageSize: "auto",
   pdfToDocxMode: "visual_preservation",
+  gifResolution: "480",
   videoCompatibilityMode: true,
   overwritePolicy: "increment",
   sortMode: "basic",

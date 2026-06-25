@@ -27,6 +27,7 @@ const SUPPORTED_INPUTS: Record<ConversionType, string[]> = {
   bmp_to_jpg: [".bmp"],
   bmp_to_png: [".bmp"],
   mp4_to_mp3: [".mp4"],
+  video_to_gif: [".mp4", ".mov", ".mkv", ".webm", ".m4v"],
   mov_to_mp4: [".mov"],
   webm_to_mp4: [".webm"],
   mkv_to_mp4: [".mkv"],
@@ -114,6 +115,13 @@ export class ValidationService {
       }
       if (extension === ".webp") {
         return this.booleanResult(await this.signatures.isWebp(outputPath), "WEBP 파일 검증에 실패했습니다.");
+      }
+      if (extension === ".gif") {
+        const signatureOk = await this.signatures.isGif(outputPath);
+        if (!signatureOk) {
+          return this.booleanResult(false, "GIF 파일 검증에 실패했습니다.");
+        }
+        return this.validateMediaReadable(outputPath);
       }
       if (extension === ".docx" || extension === ".xlsx") {
         return this.booleanResult(await this.signatures.isZip(outputPath), "Office 문서 검증에 실패했습니다.");
