@@ -269,7 +269,7 @@ export class PdfEditorService {
     if (!(await this.signatures.isPdf(outputPath))) {
       throw new Error("PDF 편집 결과 검증에 실패했습니다. 결과 파일이 정상 PDF가 아닙니다.");
     }
-    const verification = await this.editVerification.verifyNativeTextEdit(sourcePath, outputPath, edits);
+    const verification = await this.editVerification.verifyNativeTextEdit(sourcePath, outputPath, textEdits);
     warnings.push(...verification.warnings);
     if (!verification.ok) {
       await rm(outputPath, { force: true }).catch(() => undefined);

@@ -818,7 +818,7 @@ export function PdfEditorWindowApp(): JSX.Element {
       startClientY: event.clientY,
       origin: dragLine,
       lineOrigin: dragLine,
-      lineMode: getLineDragMode(dragLine, event, zoom),
+      lineMode: getLineDragMode(event),
       moved: false,
       historyCaptured: event.ctrlKey
     };
@@ -1852,6 +1852,10 @@ function DraftLineBox({
               ...lineEndpointStyle(line, "start", zoom),
               cursor: getLineCursor(line)
             }}
+            onPointerDown={(event) => {
+              onSelect();
+              onStartDrag(event);
+            }}
             aria-hidden="true"
           />
           <i
@@ -1859,6 +1863,10 @@ function DraftLineBox({
             style={{
               ...lineEndpointStyle(line, "end", zoom),
               cursor: getLineCursor(line)
+            }}
+            onPointerDown={(event) => {
+              onSelect();
+              onStartDrag(event);
             }}
             aria-hidden="true"
           />
@@ -1964,7 +1972,7 @@ function PdfObjectRecognitionLayer({
             ].join(" ")}
             style={{
               ...boxStyle(createLineHitGeometry(adjustedLine), zoom),
-              cursor: getLineCursor(adjustedLine)
+              cursor: "move"
             }}
             onPointerDown={(event) => {
               onSelect({ kind: "line", id: line.id });
@@ -1983,6 +1991,10 @@ function PdfObjectRecognitionLayer({
                 ...lineEndpointStyle(adjustedLine, "start", zoom),
                 cursor: getLineCursor(adjustedLine)
               }}
+              onPointerDown={(event) => {
+                onSelect({ kind: "line", id: line.id });
+                onStartLineDrag(event, adjustedLine);
+              }}
               aria-hidden="true"
             />
             <i
@@ -1990,6 +2002,10 @@ function PdfObjectRecognitionLayer({
               style={{
                 ...lineEndpointStyle(adjustedLine, "end", zoom),
                 cursor: getLineCursor(adjustedLine)
+              }}
+              onPointerDown={(event) => {
+                onSelect({ kind: "line", id: line.id });
+                onStartLineDrag(event, adjustedLine);
               }}
               aria-hidden="true"
             />
@@ -2478,19 +2494,11 @@ function getLineCursor(line: PdfEditorGraphicLineItem): CSSProperties["cursor"] 
   return dx * dy >= 0 ? "nwse-resize" : "nesw-resize";
 }
 
-function getLineDragMode(
-  line: PdfEditorGraphicLineItem,
-  event: ReactPointerEvent<HTMLElement>,
-  zoom: number
-): LineDragMode {
-  const rect = event.currentTarget.getBoundingClientRect();
-  const px = (event.clientX - rect.left) / zoom + createLineHitGeometry(line).x;
-  const py = (event.clientY - rect.top) / zoom + createLineHitGeometry(line).y;
-  const endpointRadius = Math.max(8 / zoom, line.strokeWidth * 3);
-  const startDistance = Math.hypot(px - line.x1, py - line.y1);
-  const endDistance = Math.hypot(px - line.x2, py - line.y2);
-  if (startDistance <= endpointRadius || startDistance < endDistance * 0.72) return "start";
-  if (endDistance <= endpointRadius || endDistance < startDistance * 0.72) return "end";
+function getLineDragMode(event: ReactPointerEvent<HTMLElement>): LineDragMode {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return "move";
+  if (target.closest(".pdf-editor-line-handle--start")) return "start";
+  if (target.closest(".pdf-editor-line-handle--end")) return "end";
   return "move";
 }
 

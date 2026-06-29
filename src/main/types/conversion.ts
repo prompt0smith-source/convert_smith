@@ -294,6 +294,10 @@ export interface PdfEditorEdit {
   y1?: number;
   x2?: number;
   y2?: number;
+  originalX1?: number;
+  originalY1?: number;
+  originalX2?: number;
+  originalY2?: number;
   strokeWidth?: number;
   dashArray?: number[];
   dashPhase?: number;

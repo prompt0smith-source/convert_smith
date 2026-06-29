@@ -209,6 +209,27 @@ export class NativePdfObjectEditEngine {
       ? images.find((image) => image.id === edit.nativeObjectId && image.pageNumber === edit.pageNumber)
       : undefined;
     if (byId) return byId;
+    const originalX = edit.originalX ?? edit.coverX;
+    const originalY = edit.originalY ?? edit.coverY;
+    const originalWidth = edit.originalWidth ?? edit.coverWidth;
+    const originalHeight = edit.originalHeight ?? edit.coverHeight;
+    if (
+      originalX !== undefined &&
+      originalY !== undefined &&
+      originalWidth !== undefined &&
+      originalHeight !== undefined
+    ) {
+      const originalMatch = chooseSingleGeometryMatch(
+        images.filter((image) => image.pageNumber === edit.pageNumber),
+        (image) =>
+          Math.abs(image.x - originalX) +
+          Math.abs(image.y - originalY) +
+          Math.abs(image.width - originalWidth) +
+          Math.abs(image.height - originalHeight),
+        IMAGE_GEOMETRY_TOLERANCE * 4
+      );
+      if (originalMatch) return originalMatch;
+    }
     return chooseSingleGeometryMatch(
       images.filter((image) => image.pageNumber === edit.pageNumber),
       (image) =>
@@ -225,20 +246,46 @@ export class NativePdfObjectEditEngine {
       ? lines.find((line) => line.id === edit.nativeObjectId && line.pageNumber === edit.pageNumber)
       : undefined;
     if (byId) return byId;
+    const originalX1 = edit.originalX1 ?? edit.coverX;
+    const originalY1 = edit.originalY1 ?? edit.coverY;
+    const originalX2 = edit.originalX2 ?? (edit.coverX !== undefined && edit.coverWidth !== undefined ? edit.coverX + edit.coverWidth : undefined);
+    const originalY2 = edit.originalY2 ?? (edit.coverY !== undefined && edit.coverHeight !== undefined ? edit.coverY + edit.coverHeight : undefined);
+    if (
+      originalX1 !== undefined &&
+      originalY1 !== undefined &&
+      originalX2 !== undefined &&
+      originalY2 !== undefined
+    ) {
+      const originalMatch = chooseLineGeometryMatch(lines, edit.pageNumber, originalX1, originalY1, originalX2, originalY2, LINE_GEOMETRY_TOLERANCE * 2);
+      if (originalMatch) return originalMatch;
+    }
+
     const targetX1 = edit.x1 ?? edit.x;
     const targetY1 = edit.y1 ?? edit.y;
     const targetX2 = edit.x2 ?? edit.x + edit.width;
     const targetY2 = edit.y2 ?? edit.y + edit.height;
-    return chooseSingleGeometryMatch(
-      lines.filter((line) => line.pageNumber === edit.pageNumber),
-      (line) =>
-        Math.min(
-          distance(line.x1, line.y1, targetX1, targetY1) + distance(line.x2, line.y2, targetX2, targetY2),
-          distance(line.x1, line.y1, targetX2, targetY2) + distance(line.x2, line.y2, targetX1, targetY1)
-        ),
-      LINE_GEOMETRY_TOLERANCE * 2
-    );
+    return chooseLineGeometryMatch(lines, edit.pageNumber, targetX1, targetY1, targetX2, targetY2, LINE_GEOMETRY_TOLERANCE * 2);
   }
+}
+
+function chooseLineGeometryMatch(
+  lines: NativeLineDraw[],
+  pageNumber: number,
+  targetX1: number,
+  targetY1: number,
+  targetX2: number,
+  targetY2: number,
+  maxScore: number
+): NativeLineDraw | undefined {
+  return chooseSingleGeometryMatch(
+    lines.filter((line) => line.pageNumber === pageNumber),
+    (line) =>
+      Math.min(
+        distance(line.x1, line.y1, targetX1, targetY1) + distance(line.x2, line.y2, targetX2, targetY2),
+        distance(line.x1, line.y1, targetX2, targetY2) + distance(line.x2, line.y2, targetX1, targetY1)
+      ),
+    maxScore
+  );
 }
 
 function scanStreamObjects(
@@ -484,6 +531,21 @@ function finiteNumber(value: unknown, fallback: number): number {
 }
 
 function createUnsupportedObjectMessage(reason: string): string {
+  const objectDetails: Record<string, string> = {
+    image_not_found: "수정할 이미지 객체를 PDF 내부 content stream에서 안전하게 찾지 못했습니다.",
+    image_stream_not_found: "이미지 객체가 들어 있는 PDF stream을 다시 찾지 못했습니다.",
+    image_without_patchable_matrix: "이 이미지는 직접 수정 가능한 단순 배치 행렬(cm)을 찾지 못했습니다.",
+    line_not_found: "수정할 선 객체를 PDF 내부 content stream에서 안전하게 찾지 못했습니다.",
+    line_stream_not_found: "선 객체가 들어 있는 PDF stream을 다시 찾지 못했습니다.",
+    non_invertible_transform: "PDF 객체의 좌표 변환 행렬을 안전하게 계산할 수 없습니다."
+  };
+  return [
+    "이미지/선 객체의 직접 저장 편집은 아직 제한되어 있습니다.",
+    "지원 가능한 단순 PDF native 명령이면 직접 수정하지만, 이 객체는 안전하게 패치하지 못했습니다.",
+    objectDetails[reason] || reason,
+    "흰 박스나 이미지 덮어쓰기 방식은 사용하지 않았고 원본 파일은 변경하지 않았습니다."
+  ].join("\n");
+
   const safeDetails: Record<string, string> = {
     image_not_found: "수정할 이미지 객체를 PDF 내부 content stream에서 안전하게 찾지 못했습니다.",
     image_stream_not_found: "이미지 객체가 들어 있는 PDF stream을 다시 찾지 못했습니다.",
